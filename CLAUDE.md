@@ -3,7 +3,7 @@
 ## Quick Reference
 
 **Plugin ID**: `obsidian-subnotes`
-**Main File**: [main.ts](main.ts) - All logic in single file (~480 lines)
+**Main File**: [main.ts](main.ts) - All logic in single file (~620 lines)
 **Build**: `npm run dev` (watch) | `npm run build` (production)
 
 ## Naming Convention
@@ -52,6 +52,13 @@ getNextChildLevel(parentLevel, existingChildren): number[]
 
 // Generate filename: ("250106120000", [1,2]) → "250106120000.1.2.md"
 generateSubnoteFilename(timestamp, level): string
+
+// Get all descendants of a note (including nested children)
+getAllDescendants(timestamp, level, allFiles): Array<{ file: TFile; level: number[] }>
+
+// Transform level from source to target hierarchy
+// Example: transformLevel([2,3,7], [2,3], [3,1]) = [3,1,7]
+transformLevel(oldLevel, sourceLevel, targetLevel): number[]
 ```
 
 ## Architecture
@@ -73,7 +80,14 @@ generateSubnoteFilename(timestamp, level): string
 
 1. **Toggle Subnotes View** - Show/hide tree view
 2. **Refresh Subnotes View** - Manually rebuild tree
-3. **Create Subnote of Active Note** - Auto-generate child note
+3. **Insert Active Note as Subnote** - Move active note and all descendants into another note
+   - Opens modal to select target parent note
+   - Validates against circular dependencies
+   - Renames active note and all descendants with transformed hierarchy
+   - Example: `xx.2.3` → `yy.3.1`, `xx.2.3.7` → `yy.3.1.7`
+   - Checks for filename conflicts before renaming
+   - Auto-refreshes view after successful operation
+4. **Create Subnote of Active Note** - Auto-generate child note
    - Validates active file is valid subnote in configured folder
    - Calculates next level number automatically
    - Applies template content if configured
@@ -121,6 +135,14 @@ await this.refreshAllViews(); // Refresh all open views
 - Single folder only
 
 ## Changelog
+
+### v1.0.4 (2025-10-06)
+- Added "Insert Active Note as Subnote" command
+- Added `TargetParentSuggestModal` for selecting target parent note
+- Added `getAllDescendants()` utility for collecting all descendant notes
+- Added `transformLevel()` utility for hierarchy level transformation
+- Supports moving note with all descendants to different hierarchy
+- Validates against circular dependencies and filename conflicts
 
 ### v1.0.3 (2025-10-06)
 - Added automatic view refresh on metadata changes (title updates)

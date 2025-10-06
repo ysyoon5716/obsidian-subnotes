@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, SuggestModal } from 'obsidian';
 
 interface SubnotesSettings {
 	notesFolder: string;
@@ -78,6 +78,28 @@ function generateSubnoteFilename(timestamp: string, level: number[]): string {
 		return `${timestamp}.md`;
 	}
 	return `${timestamp}.${level.join('.')}.md`;
+}
+
+// Get all descendants of a given note
+function getAllDescendants(timestamp: string, level: number[], allFiles: TFile[]): Array<{ file: TFile; level: number[] }> {
+	const descendants: Array<{ file: TFile; level: number[] }> = [];
+
+	for (const file of allFiles) {
+		const parsed = parseSubnoteFilename(file.name);
+		if (parsed && parsed.timestamp === timestamp && isSubnoteOf(parsed.level, level)) {
+			descendants.push({ file, level: parsed.level });
+		}
+	}
+
+	return descendants;
+}
+
+// Transform level from source hierarchy to target hierarchy
+// Example: transformLevel([2,3,7], [2,3], [3,1]) = [3,1,7]
+function transformLevel(oldLevel: number[], sourceLevel: number[], targetLevel: number[]): number[] {
+	// Remove source prefix and add target prefix
+	const suffix = oldLevel.slice(sourceLevel.length);
+	return [...targetLevel, ...suffix];
 }
 
 const VIEW_TYPE_SUBNOTES = "subnotes-view";
@@ -250,6 +272,39 @@ class SubnotesView extends ItemView {
 	}
 }
 
+// Modal to suggest and select target parent note
+class TargetParentSuggestModal extends SuggestModal<SubnoteNode> {
+	plugin: SubnotesPlugin;
+	validTargets: SubnoteNode[];
+	onChoose: (target: SubnoteNode) => void;
+
+	constructor(app: App, plugin: SubnotesPlugin, validTargets: SubnoteNode[], onChoose: (target: SubnoteNode) => void) {
+		super(app);
+		this.plugin = plugin;
+		this.validTargets = validTargets;
+		this.onChoose = onChoose;
+		this.setPlaceholder("Select target parent note...");
+	}
+
+	getSuggestions(query: string): SubnoteNode[] {
+		const lowerQuery = query.toLowerCase();
+		return this.validTargets.filter(node => {
+			const displayText = node.title || node.name;
+			return displayText.toLowerCase().includes(lowerQuery);
+		});
+	}
+
+	renderSuggestion(node: SubnoteNode, el: HTMLElement): void {
+		const displayText = node.title || node.name;
+		el.createEl("div", { text: displayText });
+		el.createEl("small", { text: node.name, cls: "subnote-path" });
+	}
+
+	onChooseSuggestion(node: SubnoteNode, evt: MouseEvent | KeyboardEvent): void {
+		this.onChoose(node);
+	}
+}
+
 export default class SubnotesPlugin extends Plugin {
 	settings: SubnotesSettings;
 
@@ -288,6 +343,144 @@ export default class SubnotesPlugin extends Plugin {
 						await view.refresh();
 					}
 				}
+			}
+		});
+
+		// Add command to insert active note as subnote
+		this.addCommand({
+			id: 'insert-as-subnote',
+			name: 'Insert Active Note as Subnote',
+			callback: async () => {
+				// Get active file
+				const activeFile = this.app.workspace.getActiveFile();
+				if (!activeFile) {
+					new Notice('No active note');
+					return;
+				}
+
+				// Check if file is in configured notes folder
+				const notesFolder = this.settings.notesFolder;
+				if (!activeFile.path.startsWith(notesFolder + '/')) {
+					new Notice('Active note is not in the configured subnotes folder');
+					return;
+				}
+
+				// Parse the active file's name to get timestamp and level
+				const activeParsed = parseSubnoteFilename(activeFile.name);
+				if (!activeParsed) {
+					new Notice('Active note is not a valid subnote');
+					return;
+				}
+
+				const { timestamp: activeTimestamp, level: activeLevel } = activeParsed;
+
+				// Get all files and collect descendants of active note
+				const allFiles = this.app.vault.getMarkdownFiles();
+				const descendants = getAllDescendants(activeTimestamp, activeLevel, allFiles);
+
+				// Build list of valid target parents (exclude active note and its descendants)
+				const validTargets: SubnoteNode[] = [];
+				const excludedPaths = new Set([activeFile.path, ...descendants.map(d => d.file.path)]);
+
+				for (const file of allFiles) {
+					if (!file.path.startsWith(notesFolder + '/')) continue;
+					if (excludedPaths.has(file.path)) continue;
+
+					const parsed = parseSubnoteFilename(file.name);
+					if (parsed) {
+						validTargets.push({
+							name: file.basename,
+							path: file.path,
+							file: file,
+							title: extractTitle(this.app, file),
+							children: [],
+							level: parsed.level
+						});
+					}
+				}
+
+				if (validTargets.length === 0) {
+					new Notice('No valid target parent notes found');
+					return;
+				}
+
+				// Sort targets by timestamp (most recent first)
+				validTargets.sort((a, b) => b.name.localeCompare(a.name));
+
+				// Show modal to select target parent
+				new TargetParentSuggestModal(this.app, this, validTargets, async (targetParent) => {
+					try {
+						// Parse target parent
+						const targetParsed = parseSubnoteFilename(targetParent.file.name);
+						if (!targetParsed) {
+							new Notice('Selected target is not a valid subnote');
+							return;
+						}
+
+						const { timestamp: targetTimestamp, level: targetParentLevel } = targetParsed;
+
+						// Find existing children of target parent
+						const targetChildren: SubnoteNode[] = [];
+						for (const file of allFiles) {
+							if (!file.path.startsWith(notesFolder + '/')) continue;
+
+							const parsed = parseSubnoteFilename(file.name);
+							if (parsed && parsed.timestamp === targetTimestamp && isDirectChild(parsed.level, targetParentLevel)) {
+								targetChildren.push({
+									name: file.basename,
+									path: file.path,
+									file: file,
+									title: extractTitle(this.app, file),
+									children: [],
+									level: parsed.level
+								});
+							}
+						}
+
+						// Calculate new level under target parent
+						const newLevel = getNextChildLevel(targetParentLevel, targetChildren);
+
+						// Prepare rename operations: active note + all descendants
+						const renameOps: Array<{ oldPath: string; newPath: string }> = [];
+
+						// Add active note rename
+						const newActiveFilename = generateSubnoteFilename(targetTimestamp, newLevel);
+						const newActivePath = `${notesFolder}/${newActiveFilename}`;
+						renameOps.push({ oldPath: activeFile.path, newPath: newActivePath });
+
+						// Add descendant renames with transformed levels
+						for (const descendant of descendants) {
+							const transformedLevel = transformLevel(descendant.level, activeLevel, newLevel);
+							const newDescendantFilename = generateSubnoteFilename(targetTimestamp, transformedLevel);
+							const newDescendantPath = `${notesFolder}/${newDescendantFilename}`;
+							renameOps.push({ oldPath: descendant.file.path, newPath: newDescendantPath });
+						}
+
+						// Check for conflicts
+						for (const op of renameOps) {
+							const existingFile = this.app.vault.getAbstractFileByPath(op.newPath);
+							if (existingFile) {
+								new Notice(`Conflict: File already exists at ${op.newPath}`);
+								return;
+							}
+						}
+
+						// Perform all renames
+						for (const op of renameOps) {
+							const file = this.app.vault.getAbstractFileByPath(op.oldPath);
+							if (file instanceof TFile) {
+								await this.app.vault.rename(file, op.newPath);
+							}
+						}
+
+						new Notice(`Successfully inserted ${activeFile.basename} as subnote of ${targetParent.title || targetParent.name}`);
+
+						// Refresh views
+						await this.refreshAllViews();
+					} catch (error) {
+						new Notice(`Failed to insert subnote: ${error.message}`);
+					}
+				}).open();
 			}
 		});
 
