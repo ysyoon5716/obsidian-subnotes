@@ -1,8 +1,83 @@
-/*
+/* Subnotes View Container */
+.subnotes-view-container {
+	padding: 10px;
+	height: 100%;
+	overflow-y: auto;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+/* Empty state */
+.subnotes-empty {
+	padding: 20px;
+	text-align: center;
+	color: var(--text-muted);
+	font-style: italic;
+}
 
-If your plugin does not need CSS, delete this file.
+/* Tree container */
+.subnotes-tree {
+	width: 100%;
+}
 
-*/
+/* Individual node */
+.subnotes-node {
+	position: relative;
+}
+
+.subnotes-node-content {
+	display: flex;
+	align-items: center;
+	padding: 4px 8px;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background-color 0.1s;
+}
+
+.subnotes-node-content:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* Collapse icon */
+.subnotes-collapse-icon {
+	width: 16px;
+	height: 16px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	margin-right: 4px;
+	font-size: 10px;
+	cursor: pointer;
+	user-select: none;
+	flex-shrink: 0;
+}
+
+.subnotes-collapse-icon-placeholder {
+	width: 16px;
+	height: 16px;
+	display: inline-block;
+	margin-right: 4px;
+	flex-shrink: 0;
+}
+
+/* Note name */
+.subnotes-node-name {
+	flex-grow: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-normal);
+	font-size: 14px;
+}
+
+.subnotes-node-name:hover {
+	color: var(--text-accent);
+}
+
+/* Children container */
+.subnotes-children {
+	margin-left: 0;
+}
+
+/* Collapsed state */
+.subnotes-node.collapsed > .subnotes-children {
+	display: none;
+}

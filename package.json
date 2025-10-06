@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "obsidian-subnotes",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "Manage and visualize hierarchical subnotes with timestamp-based naming",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
