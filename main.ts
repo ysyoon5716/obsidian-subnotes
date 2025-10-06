@@ -863,14 +863,8 @@ class SubnotesView extends ItemView {
 		const displayText = node.title || node.name;
 		const nameEl = contentEl.createEl('span', { cls: 'subnotes-node-name', text: displayText });
 		nameEl.addEventListener('click', async () => {
-			// If this is a root note and not already selected, filter to show only this hierarchy
-			if (isRoot && this.selectedRootTimestamp !== node.name) {
-				this.selectedRootTimestamp = node.name;
-				this.render();
-			} else {
-				// For child notes or already selected root, just open the file
-				await this.app.workspace.getLeaf(false).openFile(node.file);
-			}
+			// Always open the file on click
+			await this.app.workspace.getLeaf(false).openFile(node.file);
 		});
 
 		// Add context menu (right-click) handler
