@@ -107,6 +107,7 @@ const VIEW_TYPE_SUBNOTES = "subnotes-view";
 class SubnotesView extends ItemView {
 	plugin: SubnotesPlugin;
 	rootNodes: SubnoteNode[] = [];
+	selectedRootTimestamp: string | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: SubnotesPlugin) {
 		super(leaf);
@@ -229,14 +230,19 @@ class SubnotesView extends ItemView {
 			return;
 		}
 
+		// Filter root nodes based on selection
+		const displayRoots = this.selectedRootTimestamp
+			? this.rootNodes.filter(root => root.name === this.selectedRootTimestamp)
+			: this.rootNodes;
+
 		const treeContainer = container.createEl('div', { cls: 'subnotes-tree' });
 
-		for (const root of this.rootNodes) {
-			this.renderNode(treeContainer, root, 0);
+		for (const root of displayRoots) {
+			this.renderNode(treeContainer, root, 0, true);
 		}
 	}
 
-	renderNode(container: HTMLElement, node: SubnoteNode, depth: number): void {
+	renderNode(container: HTMLElement, node: SubnoteNode, depth: number, isRoot: boolean = false): void {
 		const nodeEl = container.createEl('div', { cls: 'subnotes-node' });
 		nodeEl.style.paddingLeft = `${depth * 20}px`;
 
@@ -259,14 +265,21 @@ class SubnotesView extends ItemView {
 		const displayText = node.title || node.name;
 		const nameEl = contentEl.createEl('span', { cls: 'subnotes-node-name', text: displayText });
 		nameEl.addEventListener('click', async () => {
-			await this.app.workspace.getLeaf(false).openFile(node.file);
+			// If this is a root note and not already selected, filter to show only this hierarchy
+			if (isRoot && this.selectedRootTimestamp !== node.name) {
+				this.selectedRootTimestamp = node.name;
+				this.render();
+			} else {
+				// For child notes or already selected root, just open the file
+				await this.app.workspace.getLeaf(false).openFile(node.file);
+			}
 		});
 
 		// Render children
 		if (node.children.length > 0) {
 			const childrenContainer = nodeEl.createEl('div', { cls: 'subnotes-children' });
 			for (const child of node.children) {
-				this.renderNode(childrenContainer, child, depth + 1);
+				this.renderNode(childrenContainer, child, depth + 1, false);
 			}
 		}
 	}
@@ -484,6 +497,48 @@ export default class SubnotesPlugin extends Plugin {
 			}
 		});
 
+		// Add command to create new root note
+		this.addCommand({
+			id: 'create-root-note',
+			name: 'Create New Root Note',
+			callback: async () => {
+				const notesFolder = this.settings.notesFolder;
+
+				// Generate timestamp in YYMMDDHHMMSS format
+				const now = new Date();
+				const year = String(now.getFullYear()).slice(-2);
+				const month = String(now.getMonth() + 1).padStart(2, '0');
+				const day = String(now.getDate()).padStart(2, '0');
+				const hours = String(now.getHours()).padStart(2, '0');
+				const minutes = String(now.getMinutes()).padStart(2, '0');
+				const seconds = String(now.getSeconds()).padStart(2, '0');
+				const timestamp = `${year}${month}${day}${hours}${minutes}${seconds}`;
+
+				// Generate filename
+				const filename = `${timestamp}.md`;
+				const filePath = `${notesFolder}/${filename}`;
+
+				// Get template content if configured
+				let content = '';
+				if (this.settings.templatePath) {
+					const templateFile = this.app.vault.getAbstractFileByPath(this.settings.templatePath);
+					if (templateFile instanceof TFile) {
+						content = await this.app.vault.read(templateFile);
+					}
+				}
+
+				// Create the new root note
+				try {
+					const newFile = await this.app.vault.create(filePath, content);
+					// Open the new file
+					await this.app.workspace.getLeaf(false).openFile(newFile);
+					new Notice(`Created root note: ${filename}`);
+				} catch (error) {
+					new Notice(`Failed to create root note: ${error.message}`);
+				}
+			}
+		});
+
 		// Add command to create subnote of active note
 		this.addCommand({
 			id: 'create-subnote-of-active',
@@ -506,7 +561,7 @@ export default class SubnotesPlugin extends Plugin {
 				// Parse the active file's name to get timestamp and level
 				const parsed = parseSubnoteFilename(activeFile.name);
 				if (!parsed) {
-					new Notice('Active note is not a valid subnote');
+					new Notice(`Active note "${activeFile.name}" is not a valid subnote.\nExpected format: YYMMDDHHMMSS.md or YYMMDDHHMMSS.1.2.md`);
 					return;
 				}
 
@@ -583,6 +638,33 @@ export default class SubnotesPlugin extends Plugin {
 				if (file.path.startsWith(this.settings.notesFolder + '/') &&
 					parseSubnoteFilename(file.name)) {
 					this.refreshAllViews();
+				}
+			})
+		);
+
+		// Watch for active file changes to auto-filter view
+		this.registerEvent(
+			this.app.workspace.on('active-leaf-change', async (leaf) => {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (!activeFile) return;
+
+				// Check if it's a subnote in the configured folder
+				if (!activeFile.path.startsWith(this.settings.notesFolder + '/')) return;
+
+				const parsed = parseSubnoteFilename(activeFile.name);
+				if (!parsed) return;
+
+				// Extract root timestamp (first 12 digits)
+				const rootTimestamp = parsed.timestamp;
+
+				// Update all subnote views to filter to this root
+				const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_SUBNOTES);
+				for (const viewLeaf of leaves) {
+					const view = viewLeaf.view;
+					if (view instanceof SubnotesView) {
+						view.selectedRootTimestamp = rootTimestamp;
+						view.render();
+					}
 				}
 			})
 		);

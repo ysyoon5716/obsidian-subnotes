@@ -3,7 +3,7 @@
 ## Quick Reference
 
 **Plugin ID**: `obsidian-subnotes`
-**Main File**: [main.ts](main.ts) - All logic in single file (~620 lines)
+**Main File**: [main.ts](main.ts) - All logic in single file (~680 lines)
 **Build**: `npm run dev` (watch) | `npm run build` (production)
 
 ## Naming Convention
@@ -74,21 +74,28 @@ transformLevel(oldLevel, sourceLevel, targetLevel): number[]
 - Displays YAML `title` field, falls back to filename
 - Indentation: 20px per depth level
 - Auto-refreshes on file create/delete/rename/metadata changes
+- Auto-filters to show only active file's hierarchy
 - Uses Obsidian `ItemView` (right sidebar, "layers" icon)
 
 ## Commands
 
 1. **Toggle Subnotes View** - Show/hide tree view
 2. **Refresh Subnotes View** - Manually rebuild tree
-3. **Insert Active Note as Subnote** - Move active note and all descendants into another note
+3. **Create New Root Note** - Create root note with auto-generated timestamp
+   - Generates timestamp in YYMMDDHHMMSS format
+   - Creates file in configured notes folder
+   - Applies template content if configured
+   - Opens newly created root note
+4. **Insert Active Note as Subnote** - Move active note and all descendants into another note
    - Opens modal to select target parent note
    - Validates against circular dependencies
    - Renames active note and all descendants with transformed hierarchy
    - Example: `xx.2.3` → `yy.3.1`, `xx.2.3.7` → `yy.3.1.7`
    - Checks for filename conflicts before renaming
    - Auto-refreshes view after successful operation
-4. **Create Subnote of Active Note** - Auto-generate child note
+5. **Create Subnote of Active Note** - Auto-generate child note
    - Validates active file is valid subnote in configured folder
+   - Shows improved error message with expected format if validation fails
    - Calculates next level number automatically
    - Applies template content if configured
    - Opens newly created subnote
@@ -135,6 +142,13 @@ await this.refreshAllViews(); // Refresh all open views
 - Single folder only
 
 ## Changelog
+
+### v1.0.5 (2025-10-06)
+- Added auto-filtering: view now automatically shows only active file's hierarchy
+- Added `workspace.on('active-leaf-change')` event listener for auto-filtering
+- Added "Create New Root Note" command with auto-generated timestamps
+- Improved error messages showing expected filename format
+- Removed manual "Back to All" button (redundant with auto-filtering)
 
 ### v1.0.4 (2025-10-06)
 - Added "Insert Active Note as Subnote" command
