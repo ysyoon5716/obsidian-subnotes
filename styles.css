@@ -86,3 +86,28 @@
 .subnotes-node.collapsed > .subnotes-children {
 	display: none;
 }
+
+/* Drag and drop states */
+.subnotes-node-content.dragging {
+	opacity: 0.5;
+	cursor: grabbing;
+}
+
+.subnotes-node-content.drag-over-top {
+	border-top: 2px solid var(--interactive-accent);
+}
+
+.subnotes-node-content.drag-over-bottom {
+	border-bottom: 2px solid var(--interactive-accent);
+}
+
+.subnotes-node-content.drag-over-child {
+	background-color: var(--background-modifier-hover);
+	border: 2px solid var(--interactive-accent);
+	border-radius: 4px;
+}
+
+/* Make content element grabbable */
+.subnotes-node-content[draggable="true"] {
+	cursor: grab;
+}

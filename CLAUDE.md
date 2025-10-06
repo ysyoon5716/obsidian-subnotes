@@ -3,7 +3,7 @@
 ## Quick Reference
 
 **Plugin ID**: `obsidian-subnotes`
-**Main File**: [main.ts](main.ts) - All logic in single file (~680 lines)
+**Main File**: [main.ts](main.ts) - All logic in single file (~1180 lines)
 **Build**: `npm run dev` (watch) | `npm run build` (production)
 
 ## Naming Convention
@@ -146,6 +146,21 @@ await this.refreshAllViews(); // Refresh all open views
 - Single folder only
 
 ## Changelog
+
+### v1.0.10 (2025-10-06)
+- Added drag-and-drop functionality to reorder notes in hierarchy
+- Drag notes to reorder as siblings (drop above or below target note)
+- Hold Alt/Option key while dropping to make note a child of target
+- Automatically renumbers siblings when inserting at specific positions
+- **Fixed same-parent move bug**: When dragging within same parent (e.g., xx.3 → after xx.7), properly compacts the gap and reorders sequentially
+  - Uses two-phase temp numbering to avoid conflicts during reordering
+  - Different-parent moves use optimized increment-only logic
+- Validates moves to prevent circular dependencies and invalid operations
+- Shows visual feedback during drag: opacity change, drop zone indicators (border highlights)
+- Root notes with different timestamps cannot be moved to each other's hierarchies
+- All descendants move with parent note, maintaining relative hierarchy structure
+- Added `reorderNode()` method in `SubnotesView` class for handling drag-and-drop logic
+- Added CSS styles for drag states: `.dragging`, `.drag-over-top`, `.drag-over-bottom`, `.drag-over-child`
 
 ### v1.0.9 (2025-10-06)
 - Added auto-initialization of subnote view on plugin activation

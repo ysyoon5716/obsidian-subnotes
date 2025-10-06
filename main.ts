@@ -419,11 +419,396 @@ class SubnotesView extends ItemView {
 		}
 	}
 
+	async reorderNode(
+		dragData: { path: string; timestamp: string; level: number[]; isRoot: boolean },
+		targetNode: SubnoteNode,
+		makeChild: boolean,
+		insertBefore: boolean
+	): Promise<void> {
+		const notesFolder = this.plugin.settings.notesFolder;
+
+		// Get dragged file
+		const draggedFile = this.app.vault.getAbstractFileByPath(dragData.path);
+		if (!(draggedFile instanceof TFile)) {
+			new Notice('Dragged file not found');
+			return;
+		}
+
+		// Parse target node
+		const targetParsed = parseSubnoteFilename(targetNode.file.name);
+		if (!targetParsed) {
+			new Notice('Invalid target node');
+			return;
+		}
+
+		// Validation: Cannot drop onto self
+		if (dragData.path === targetNode.path) {
+			return;
+		}
+
+		// Validation: Cannot drop onto descendants
+		const allFiles = this.app.vault.getMarkdownFiles();
+		const draggedDescendants = getAllDescendants(dragData.timestamp, dragData.level, allFiles);
+		if (draggedDescendants.some(d => d.file.path === targetNode.path)) {
+			new Notice('Cannot drop note onto its own descendant');
+			return;
+		}
+
+		// Validation: Root notes can only be reordered among roots (different timestamps must stay separate)
+		if (dragData.isRoot && dragData.timestamp !== targetParsed.timestamp) {
+			new Notice('Root notes cannot be moved to different timestamp hierarchies');
+			return;
+		}
+
+		// Calculate new level and timestamp for dragged node
+		let newTimestamp: string;
+		let newLevel: number[];
+		let targetParentLevel: number[];
+
+		if (makeChild) {
+			// Drop as child of target
+			newTimestamp = targetParsed.timestamp;
+			targetParentLevel = targetParsed.level;
+
+			// Find existing children of target
+			const targetChildren: SubnoteNode[] = [];
+			for (const file of allFiles) {
+				if (!file.path.startsWith(notesFolder + '/')) continue;
+				const parsed = parseSubnoteFilename(file.name);
+				if (parsed && parsed.timestamp === newTimestamp && isDirectChild(parsed.level, targetParentLevel)) {
+					// Skip the dragged node if it's already a child
+					if (file.path !== dragData.path) {
+						targetChildren.push({
+							name: file.basename,
+							path: file.path,
+							file: file,
+							title: extractTitle(this.app, file),
+							children: [],
+							level: parsed.level
+						});
+					}
+				}
+			}
+
+			// Calculate next child level
+			newLevel = getNextChildLevel(targetParentLevel, targetChildren);
+		} else {
+			// Drop as sibling of target (before or after)
+			newTimestamp = targetParsed.timestamp;
+			targetParentLevel = targetParsed.level.slice(0, -1);
+
+			// Detect if this is a same-parent move
+			const draggedParentLevel = dragData.level.slice(0, -1);
+			const isSameParent = dragData.timestamp === newTimestamp &&
+				JSON.stringify(draggedParentLevel) === JSON.stringify(targetParentLevel);
+
+			// Get all siblings of target (nodes with same parent)
+			const siblings: Array<{ file: TFile; level: number[] }> = [];
+			for (const file of allFiles) {
+				if (!file.path.startsWith(notesFolder + '/')) continue;
+				const parsed = parseSubnoteFilename(file.name);
+				if (parsed && parsed.timestamp === newTimestamp && isDirectChild(parsed.level, targetParentLevel)) {
+					// Skip the dragged node
+					if (file.path !== dragData.path) {
+						siblings.push({ file, level: parsed.level });
+					}
+				}
+			}
+
+			// Sort siblings by level
+			siblings.sort((a, b) => {
+				for (let i = 0; i < Math.max(a.level.length, b.level.length); i++) {
+					const aVal = a.level[i] || 0;
+					const bVal = b.level[i] || 0;
+					if (aVal !== bVal) return aVal - bVal;
+				}
+				return 0;
+			});
+
+			if (isSameParent) {
+				// Same-parent move: Use full reordering approach
+				// Build the final ordered list with dragged node inserted at target position
+				const targetIndex = siblings.findIndex(s => s.file.path === targetNode.path);
+				const insertPosition = insertBefore ? targetIndex : targetIndex + 1;
+
+				// Create ordered list of all nodes (including dragged node at new position)
+				const orderedNodes: Array<{ file: TFile; oldLevel: number[]; isBeingMoved: boolean }> = [];
+
+				for (let i = 0; i < siblings.length; i++) {
+					if (i === insertPosition) {
+						// Insert dragged node at this position
+						orderedNodes.push({ file: draggedFile, oldLevel: dragData.level, isBeingMoved: true });
+					}
+					orderedNodes.push({ file: siblings[i].file, oldLevel: siblings[i].level, isBeingMoved: false });
+				}
+
+				// Handle case where dragged node should be last
+				if (insertPosition >= siblings.length) {
+					orderedNodes.push({ file: draggedFile, oldLevel: dragData.level, isBeingMoved: true });
+				}
+
+				// Now renumber all nodes sequentially from 1
+				const renumberOps: Array<{ file: TFile; oldLevel: number[]; newLevel: number[] }> = [];
+
+				for (let i = 0; i < orderedNodes.length; i++) {
+					const expectedLevelNum = i + 1;
+					const currentLevelNum = orderedNodes[i].oldLevel[orderedNodes[i].oldLevel.length - 1];
+
+					// Only renumber if position changed
+					if (currentLevelNum !== expectedLevelNum) {
+						const newNodeLevel = [...targetParentLevel, expectedLevelNum];
+						renumberOps.push({
+							file: orderedNodes[i].file,
+							oldLevel: orderedNodes[i].oldLevel,
+							newLevel: newNodeLevel
+						});
+					}
+				}
+
+				// Perform renames with temp numbering to avoid conflicts
+				// Use a large offset (1000) to avoid collisions
+				const tempOffset = 1000;
+
+				// Step 1: Rename all to temp numbers
+				for (const op of renumberOps) {
+					const tempLevelNum = renumberOps.indexOf(op) + tempOffset;
+					const tempLevel = [...targetParentLevel, tempLevelNum];
+					const tempFilename = generateSubnoteFilename(newTimestamp, tempLevel);
+					const tempPath = `${notesFolder}/${tempFilename}`;
+
+					// Rename descendants first
+					const descendants = getAllDescendants(newTimestamp, op.oldLevel, allFiles);
+					descendants.sort((a, b) => b.level.length - a.level.length);
+
+					for (const descendant of descendants) {
+						const transformedLevel = transformLevel(descendant.level, op.oldLevel, tempLevel);
+						const tempDescFilename = generateSubnoteFilename(newTimestamp, transformedLevel);
+						const tempDescPath = `${notesFolder}/${tempDescFilename}`;
+						await this.app.vault.rename(descendant.file, tempDescPath);
+					}
+
+					await this.app.vault.rename(op.file, tempPath);
+				}
+
+				// Step 2: Rename all from temp to final numbers
+				for (const op of renumberOps) {
+					const tempLevelNum = renumberOps.indexOf(op) + tempOffset;
+					const tempLevel = [...targetParentLevel, tempLevelNum];
+					const tempFilename = generateSubnoteFilename(newTimestamp, tempLevel);
+					const tempPath = `${notesFolder}/${tempFilename}`;
+
+					const finalFilename = generateSubnoteFilename(newTimestamp, op.newLevel);
+					const finalPath = `${notesFolder}/${finalFilename}`;
+
+					const tempFile = this.app.vault.getAbstractFileByPath(tempPath);
+					if (tempFile instanceof TFile) {
+						// Rename descendants first
+						const descendants = getAllDescendants(newTimestamp, tempLevel, allFiles);
+						descendants.sort((a, b) => b.level.length - a.level.length);
+
+						for (const descendant of descendants) {
+							const transformedLevel = transformLevel(descendant.level, tempLevel, op.newLevel);
+							const finalDescFilename = generateSubnoteFilename(newTimestamp, transformedLevel);
+							const finalDescPath = `${notesFolder}/${finalDescFilename}`;
+							await this.app.vault.rename(descendant.file, finalDescPath);
+						}
+
+						await this.app.vault.rename(tempFile, finalPath);
+					}
+				}
+
+				// Set the new level for dragged node (it's already been renamed)
+				const draggedIndex = orderedNodes.findIndex(n => n.isBeingMoved);
+				newLevel = [...targetParentLevel, draggedIndex + 1];
+
+				// Skip the normal rename operation at the end
+				const newFilename = generateSubnoteFilename(newTimestamp, newLevel);
+				const newPath = `${notesFolder}/${newFilename}`;
+				const currentFile = this.app.vault.getAbstractFileByPath(newPath);
+
+				if (currentFile) {
+					// Already renamed, just update descendants if needed (already done above)
+					new Notice(`Moved note successfully`);
+					await this.refresh();
+					return;
+				}
+
+			} else {
+				// Different-parent move: Use original increment logic
+				// Insert dragged node at position by calculating level number
+				const targetLevelNum = targetParsed.level[targetParsed.level.length - 1];
+				const newLevelNum = insertBefore ? targetLevelNum : targetLevelNum + 1;
+
+				newLevel = [...targetParentLevel, newLevelNum];
+
+				// Increment all siblings at or after insert position
+				const siblingsToRenumber: Array<{ file: TFile; oldLevel: number[]; newLevel: number[] }> = [];
+				for (const sibling of siblings) {
+					const siblingLevelNum = sibling.level[sibling.level.length - 1];
+					if (siblingLevelNum >= newLevelNum) {
+						const adjustedLevelNum = siblingLevelNum + 1;
+						const adjustedLevel = [...targetParentLevel, adjustedLevelNum];
+						siblingsToRenumber.push({ file: sibling.file, oldLevel: sibling.level, newLevel: adjustedLevel });
+					}
+				}
+
+				// Renumber siblings first (in reverse order to avoid conflicts)
+				siblingsToRenumber.reverse();
+				for (const sibling of siblingsToRenumber) {
+					const newFilename = generateSubnoteFilename(newTimestamp, sibling.newLevel);
+					const newPath = `${notesFolder}/${newFilename}`;
+
+					// Also rename descendants
+					const siblingDescendants = getAllDescendants(newTimestamp, sibling.oldLevel, allFiles);
+					siblingDescendants.sort((a, b) => b.level.length - a.level.length); // Deepest first
+
+					for (const descendant of siblingDescendants) {
+						const transformedLevel = transformLevel(descendant.level, sibling.oldLevel, sibling.newLevel);
+						const newDescFilename = generateSubnoteFilename(newTimestamp, transformedLevel);
+						const newDescPath = `${notesFolder}/${newDescFilename}`;
+						await this.app.vault.rename(descendant.file, newDescPath);
+					}
+
+					await this.app.vault.rename(sibling.file, newPath);
+				}
+			}
+		}
+
+		// Rename dragged node and all its descendants
+		const renameOps: Array<{ file: TFile; newPath: string }> = [];
+
+		// Add dragged node
+		const newFilename = generateSubnoteFilename(newTimestamp, newLevel);
+		const newPath = `${notesFolder}/${newFilename}`;
+		renameOps.push({ file: draggedFile, newPath });
+
+		// Add descendants with transformed levels
+		for (const descendant of draggedDescendants) {
+			const transformedLevel = transformLevel(descendant.level, dragData.level, newLevel);
+			const newDescFilename = generateSubnoteFilename(newTimestamp, transformedLevel);
+			const newDescPath = `${notesFolder}/${newDescFilename}`;
+			renameOps.push({ file: descendant.file, newPath: newDescPath });
+		}
+
+		// Check for conflicts
+		for (const op of renameOps) {
+			const existingFile = this.app.vault.getAbstractFileByPath(op.newPath);
+			if (existingFile && existingFile.path !== op.file.path) {
+				new Notice(`Conflict: File already exists at ${op.newPath}`);
+				return;
+			}
+		}
+
+		// Perform renames (deepest first to avoid conflicts)
+		renameOps.sort((a, b) => b.file.path.length - a.file.path.length);
+		for (const op of renameOps) {
+			await this.app.vault.rename(op.file, op.newPath);
+		}
+
+		new Notice(`Moved note successfully`);
+
+		// Refresh view
+		await this.refresh();
+	}
+
 	renderNode(container: HTMLElement, node: SubnoteNode, depth: number, isRoot: boolean = false): void {
 		const nodeEl = container.createEl('div', { cls: 'subnotes-node' });
 		nodeEl.style.paddingLeft = `${depth * 20}px`;
 
 		const contentEl = nodeEl.createEl('div', { cls: 'subnotes-node-content' });
+
+		// Make draggable
+		contentEl.draggable = true;
+		contentEl.dataset.nodePath = node.path;
+		contentEl.dataset.nodeTimestamp = node.name.substring(0, 12);
+		contentEl.dataset.nodeLevel = JSON.stringify(node.level);
+		contentEl.dataset.isRoot = String(isRoot);
+
+		// Drag event handlers
+		contentEl.addEventListener('dragstart', (e: DragEvent) => {
+			if (!e.dataTransfer) return;
+
+			contentEl.addClass('dragging');
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', node.path);
+
+			// Store drag data
+			e.dataTransfer.setData('application/json', JSON.stringify({
+				path: node.path,
+				timestamp: node.name.substring(0, 12),
+				level: node.level,
+				isRoot: isRoot
+			}));
+		});
+
+		contentEl.addEventListener('dragend', (e: DragEvent) => {
+			contentEl.removeClass('dragging');
+			// Clean up all drag-over states
+			const allNodes = container.querySelectorAll('.subnotes-node-content');
+			allNodes.forEach((node) => {
+				node.removeClass('drag-over-top');
+				node.removeClass('drag-over-bottom');
+				node.removeClass('drag-over-child');
+			});
+		});
+
+		contentEl.addEventListener('dragover', (e: DragEvent) => {
+			e.preventDefault();
+			if (!e.dataTransfer) return;
+
+			e.dataTransfer.dropEffect = 'move';
+
+			// Determine drop position based on mouse Y and modifier keys
+			const rect = contentEl.getBoundingClientRect();
+			const midPoint = rect.top + rect.height / 2;
+			const isTopHalf = e.clientY < midPoint;
+
+			// Clean previous states
+			contentEl.removeClass('drag-over-top');
+			contentEl.removeClass('drag-over-bottom');
+			contentEl.removeClass('drag-over-child');
+
+			// Alt/Option key = make child
+			if (e.altKey) {
+				contentEl.addClass('drag-over-child');
+			} else if (isTopHalf) {
+				contentEl.addClass('drag-over-top');
+			} else {
+				contentEl.addClass('drag-over-bottom');
+			}
+		});
+
+		contentEl.addEventListener('dragleave', (e: DragEvent) => {
+			contentEl.removeClass('drag-over-top');
+			contentEl.removeClass('drag-over-bottom');
+			contentEl.removeClass('drag-over-child');
+		});
+
+		contentEl.addEventListener('drop', async (e: DragEvent) => {
+			e.preventDefault();
+			e.stopPropagation();
+
+			// Clean up visual states
+			contentEl.removeClass('drag-over-top');
+			contentEl.removeClass('drag-over-bottom');
+			contentEl.removeClass('drag-over-child');
+
+			if (!e.dataTransfer) return;
+
+			const dragDataStr = e.dataTransfer.getData('application/json');
+			if (!dragDataStr) return;
+
+			const dragData = JSON.parse(dragDataStr);
+
+			// Determine drop position
+			const rect = contentEl.getBoundingClientRect();
+			const midPoint = rect.top + rect.height / 2;
+			const isTopHalf = e.clientY < midPoint;
+			const makeChild = e.altKey;
+
+			// Call reorder method
+			await this.reorderNode(dragData, node, makeChild, isTopHalf);
+		});
 
 		// Collapse/expand icon
 		if (node.children.length > 0) {
