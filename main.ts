@@ -13,6 +13,7 @@ interface SubnoteNode {
 	name: string;
 	path: string;
 	file: TFile;
+	title: string | null;
 	children: SubnoteNode[];
 	level: number[];
 }
@@ -41,6 +42,14 @@ function isSubnoteOf(childLevel: number[], parentLevel: number[]): boolean {
 
 function isDirectChild(childLevel: number[], parentLevel: number[]): boolean {
 	return childLevel.length === parentLevel.length + 1 && isSubnoteOf(childLevel, parentLevel);
+}
+
+function extractTitle(app: App, file: TFile): string | null {
+	const cache = app.metadataCache.getFileCache(file);
+	if (cache?.frontmatter?.title) {
+		return cache.frontmatter.title;
+	}
+	return null;
 }
 
 const VIEW_TYPE_SUBNOTES = "subnotes-view";
@@ -117,6 +126,7 @@ class SubnotesView extends ItemView {
 				name: root.file.basename,
 				path: root.file.path,
 				file: root.file,
+				title: extractTitle(this.app, root.file),
 				children: [],
 				level: root.level
 			};
@@ -139,6 +149,7 @@ class SubnotesView extends ItemView {
 					name: note.file.basename,
 					path: note.file.path,
 					file: note.file,
+					title: extractTitle(this.app, note.file),
 					children: [],
 					level: note.level
 				};
@@ -194,8 +205,9 @@ class SubnotesView extends ItemView {
 			contentEl.createEl('span', { cls: 'subnotes-collapse-icon-placeholder' });
 		}
 
-		// Note name
-		const nameEl = contentEl.createEl('span', { cls: 'subnotes-node-name', text: node.name });
+		// Note name - display title if available, otherwise filename
+		const displayText = node.title || node.name;
+		const nameEl = contentEl.createEl('span', { cls: 'subnotes-node-name', text: displayText });
 		nameEl.addEventListener('click', async () => {
 			await this.app.workspace.getLeaf(false).openFile(node.file);
 		});
