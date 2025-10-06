@@ -760,21 +760,32 @@ class SubnotesView extends ItemView {
 
 			// Determine drop position based on mouse Y and modifier keys
 			const rect = contentEl.getBoundingClientRect();
-			const midPoint = rect.top + rect.height / 2;
-			const isTopHalf = e.clientY < midPoint;
+			const relativeY = e.clientY - rect.top;
+			const height = rect.height;
+
+			// Calculate position as percentage (0-1)
+			const position = relativeY / height;
 
 			// Clean previous states
 			contentEl.removeClass('drag-over-top');
 			contentEl.removeClass('drag-over-bottom');
 			contentEl.removeClass('drag-over-child');
 
-			// Alt/Option key = make child
+			// Alt/Option key = force make child anywhere
 			if (e.altKey) {
 				contentEl.addClass('drag-over-child');
-			} else if (isTopHalf) {
-				contentEl.addClass('drag-over-top');
 			} else {
-				contentEl.addClass('drag-over-bottom');
+				// Three-zone drop target:
+				// - Top 25%: Insert as sibling above
+				// - Middle 50%: Insert as child
+				// - Bottom 25%: Insert as sibling below
+				if (position < 0.25) {
+					contentEl.addClass('drag-over-top');
+				} else if (position > 0.75) {
+					contentEl.addClass('drag-over-bottom');
+				} else {
+					contentEl.addClass('drag-over-child');
+				}
 			}
 		});
 
@@ -800,14 +811,38 @@ class SubnotesView extends ItemView {
 
 			const dragData = JSON.parse(dragDataStr);
 
-			// Determine drop position
+			// Determine drop position using same 3-zone logic as dragover
 			const rect = contentEl.getBoundingClientRect();
-			const midPoint = rect.top + rect.height / 2;
-			const isTopHalf = e.clientY < midPoint;
-			const makeChild = e.altKey;
+			const relativeY = e.clientY - rect.top;
+			const height = rect.height;
+			const position = relativeY / height;
+
+			let makeChild: boolean;
+			let insertBefore: boolean;
+
+			// Alt/Option key = force make child
+			if (e.altKey) {
+				makeChild = true;
+				insertBefore = false; // Not used when makeChild is true
+			} else {
+				// Three-zone drop target:
+				// - Top 25%: Insert as sibling above
+				// - Middle 50%: Insert as child
+				// - Bottom 25%: Insert as sibling below
+				if (position < 0.25) {
+					makeChild = false;
+					insertBefore = true;
+				} else if (position > 0.75) {
+					makeChild = false;
+					insertBefore = false;
+				} else {
+					makeChild = true;
+					insertBefore = false; // Not used when makeChild is true
+				}
+			}
 
 			// Call reorder method
-			await this.reorderNode(dragData, node, makeChild, isTopHalf);
+			await this.reorderNode(dragData, node, makeChild, insertBefore);
 		});
 
 		// Collapse/expand icon

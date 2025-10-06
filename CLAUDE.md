@@ -147,6 +147,17 @@ await this.refreshAllViews(); // Refresh all open views
 
 ## Changelog
 
+### v1.0.11 (2025-10-06)
+- **Enhanced drag-and-drop with 3-zone drop target for easier child insertion**
+- **New behavior**: Drag to middle 50% of any note to insert as child (no modifier key needed!)
+  - Top 25%: Insert as sibling above
+  - Middle 50%: Insert as child (new default!)
+  - Bottom 25%: Insert as sibling below
+- Hold Alt/Option key anywhere to force child insertion (override behavior)
+- Improved visual feedback: Dashed border for child insertion zone
+- Updated `dragover` and `drop` event handlers with 3-zone logic
+- Enhanced CSS styles for clearer child insertion indication
+
 ### v1.0.10 (2025-10-06)
 - Added drag-and-drop functionality to reorder notes in hierarchy
 - Drag notes to reorder as siblings (drop above or below target note)
@@ -231,4 +242,4 @@ await this.refreshAllViews(); // Refresh all open views
 
 ---
 
-*Last Updated: 2025-10-06 (v1.0.9)*
+*Last Updated: 2025-10-06 (v1.0.11)*
