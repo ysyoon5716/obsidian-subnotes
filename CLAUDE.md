@@ -75,6 +75,7 @@ transformLevel(oldLevel, sourceLevel, targetLevel): number[]
 - Indentation: 20px per depth level
 - Auto-refreshes on file create/delete/rename/metadata changes
 - Auto-filters to show only active file's hierarchy
+- Shows empty state ("No active note") when no file is active or active file is not a subnote
 - Uses Obsidian `ItemView` (right sidebar, "layers" icon)
 
 ## Commands
@@ -142,6 +143,12 @@ await this.refreshAllViews(); // Refresh all open views
 - Single folder only
 
 ## Changelog
+
+### v1.0.6 (2025-10-06)
+- Added empty state display when no active note or active file is not a subnote
+- View now shows "No active note" instead of previous hierarchy when no file is active
+- Improved initial state handling in `onOpen()` to detect active file at startup
+- Enhanced `active-leaf-change` event handler to set empty marker for non-subnote files
 
 ### v1.0.5 (2025-10-06)
 - Added auto-filtering: view now automatically shows only active file's hierarchy

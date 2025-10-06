@@ -128,6 +128,23 @@ class SubnotesView extends ItemView {
 
 	async onOpen(): Promise<void> {
 		await this.refresh();
+
+		// Set initial state based on active file
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) {
+			this.selectedRootTimestamp = '';
+		} else if (activeFile.path.startsWith(this.plugin.settings.notesFolder + '/')) {
+			const parsed = parseSubnoteFilename(activeFile.name);
+			if (parsed) {
+				this.selectedRootTimestamp = parsed.timestamp;
+			} else {
+				this.selectedRootTimestamp = '';
+			}
+		} else {
+			this.selectedRootTimestamp = '';
+		}
+
+		this.render();
 	}
 
 	async onClose(): Promise<void> {
@@ -224,6 +241,12 @@ class SubnotesView extends ItemView {
 		const container = this.containerEl.children[1];
 		container.empty();
 		container.addClass('subnotes-view-container');
+
+		// Show empty state if no active note (marker set to empty string)
+		if (this.selectedRootTimestamp === '') {
+			container.createEl('div', { text: 'No active note', cls: 'subnotes-empty' });
+			return;
+		}
 
 		if (this.rootNodes.length === 0) {
 			container.createEl('div', { text: 'No subnotes found', cls: 'subnotes-empty' });
@@ -646,19 +669,52 @@ export default class SubnotesPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', async (leaf) => {
 				const activeFile = this.app.workspace.getActiveFile();
-				if (!activeFile) return;
+
+				// Update all subnote views
+				const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_SUBNOTES);
+
+				if (!activeFile) {
+					// No active file - show empty state
+					for (const viewLeaf of leaves) {
+						const view = viewLeaf.view;
+						if (view instanceof SubnotesView) {
+							view.selectedRootTimestamp = '';
+							view.render();
+						}
+					}
+					return;
+				}
 
 				// Check if it's a subnote in the configured folder
-				if (!activeFile.path.startsWith(this.settings.notesFolder + '/')) return;
+				if (!activeFile.path.startsWith(this.settings.notesFolder + '/')) {
+					// Active file is not a subnote - show empty state
+					for (const viewLeaf of leaves) {
+						const view = viewLeaf.view;
+						if (view instanceof SubnotesView) {
+							view.selectedRootTimestamp = '';
+							view.render();
+						}
+					}
+					return;
+				}
 
 				const parsed = parseSubnoteFilename(activeFile.name);
-				if (!parsed) return;
+				if (!parsed) {
+					// Active file is not a valid subnote - show empty state
+					for (const viewLeaf of leaves) {
+						const view = viewLeaf.view;
+						if (view instanceof SubnotesView) {
+							view.selectedRootTimestamp = '';
+							view.render();
+						}
+					}
+					return;
+				}
 
 				// Extract root timestamp (first 12 digits)
 				const rootTimestamp = parsed.timestamp;
 
 				// Update all subnote views to filter to this root
-				const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_SUBNOTES);
 				for (const viewLeaf of leaves) {
 					const view = viewLeaf.view;
 					if (view instanceof SubnotesView) {
