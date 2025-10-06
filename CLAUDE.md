@@ -77,6 +77,9 @@ transformLevel(oldLevel, sourceLevel, targetLevel): number[]
 - Auto-filters to show only active file's hierarchy
 - Shows empty state ("No active note") when no file is active or active file is not a subnote
 - Uses Obsidian `ItemView` (right sidebar, "layers" icon)
+- **Right-click context menu** on note titles with quick actions:
+  - "Create a new subnote" - Creates child note under clicked note
+  - "Delete this note" - Deletes note and all descendants (with confirmation)
 
 ## Commands
 
@@ -143,6 +146,21 @@ await this.refreshAllViews(); // Refresh all open views
 - Single folder only
 
 ## Changelog
+
+### v1.0.7 (2025-10-06)
+- Added right-click context menu on note titles in tree view
+- Added "Create a new subnote" context menu item
+  - Creates child note under right-clicked note
+  - Uses same template logic as command-based creation
+  - Automatically opens newly created subnote
+- Added "Delete this note" context menu item
+  - Deletes note and all descendants with confirmation modal
+  - Shows count of affected notes in confirmation dialog
+  - Closes active file tabs if deleted
+  - Deletes from deepest to shallowest to avoid conflicts
+- Added `createSubnoteOfNode()` method in `SubnotesView` class
+- Added `deleteNodeWithDescendants()` method in `SubnotesView` class
+- Imported `Menu` class from Obsidian API
 
 ### v1.0.6 (2025-10-06)
 - Added empty state display when no active note or active file is not a subnote

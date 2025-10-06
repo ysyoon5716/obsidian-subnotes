@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, SuggestModal } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, SuggestModal, Menu } from 'obsidian';
 
 interface SubnotesSettings {
 	notesFolder: string;
@@ -265,6 +265,160 @@ class SubnotesView extends ItemView {
 		}
 	}
 
+	async createSubnoteOfNode(node: SubnoteNode): Promise<void> {
+		const notesFolder = this.plugin.settings.notesFolder;
+
+		// Parse the node's filename to get timestamp and level
+		const parsed = parseSubnoteFilename(node.file.name);
+		if (!parsed) {
+			new Notice('Invalid subnote format');
+			return;
+		}
+
+		const { timestamp, level: parentLevel } = parsed;
+
+		// Get all files to find existing children
+		const files = this.app.vault.getMarkdownFiles();
+		const existingChildren: SubnoteNode[] = [];
+
+		for (const file of files) {
+			if (!file.path.startsWith(notesFolder + '/')) continue;
+
+			const fileParsed = parseSubnoteFilename(file.name);
+			if (fileParsed && fileParsed.timestamp === timestamp && isDirectChild(fileParsed.level, parentLevel)) {
+				existingChildren.push({
+					name: file.basename,
+					path: file.path,
+					file: file,
+					title: extractTitle(this.app, file),
+					children: [],
+					level: fileParsed.level
+				});
+			}
+		}
+
+		// Calculate next level
+		const newLevel = getNextChildLevel(parentLevel, existingChildren);
+
+		// Generate new filename
+		const newFilename = generateSubnoteFilename(timestamp, newLevel);
+		const newFilePath = `${notesFolder}/${newFilename}`;
+
+		// Get template content if configured
+		let content = '';
+		if (this.plugin.settings.templatePath) {
+			const templateFile = this.app.vault.getAbstractFileByPath(this.plugin.settings.templatePath);
+			if (templateFile instanceof TFile) {
+				content = await this.app.vault.read(templateFile);
+			}
+		}
+
+		// Create the new file
+		try {
+			const newFile = await this.app.vault.create(newFilePath, content);
+			// Open the new file
+			await this.app.workspace.getLeaf(false).openFile(newFile);
+			new Notice(`Created subnote: ${newFilename}`);
+			// Refresh view
+			await this.refresh();
+		} catch (error) {
+			new Notice(`Failed to create subnote: ${error.message}`);
+		}
+	}
+
+	async deleteNodeWithDescendants(node: SubnoteNode): Promise<void> {
+		// Parse the node's filename
+		const parsed = parseSubnoteFilename(node.file.name);
+		if (!parsed) {
+			new Notice('Invalid subnote format');
+			return;
+		}
+
+		const { timestamp, level } = parsed;
+
+		// Get all descendants
+		const allFiles = this.app.vault.getMarkdownFiles();
+		const descendants = getAllDescendants(timestamp, level, allFiles);
+
+		// Show confirmation modal
+		const totalNotes = 1 + descendants.length;
+		const message = descendants.length > 0
+			? `Delete "${node.title || node.name}" and ${descendants.length} descendant note${descendants.length > 1 ? 's' : ''}? (${totalNotes} total)`
+			: `Delete "${node.title || node.name}"?`;
+
+		const confirmed = await new Promise<boolean>((resolve) => {
+			const modal = new Modal(this.app);
+			modal.titleEl.setText('Confirm Deletion');
+			modal.contentEl.createEl('p', { text: message });
+
+			const buttonContainer = modal.contentEl.createEl('div', { cls: 'modal-button-container' });
+			buttonContainer.style.display = 'flex';
+			buttonContainer.style.justifyContent = 'flex-end';
+			buttonContainer.style.gap = '8px';
+			buttonContainer.style.marginTop = '16px';
+
+			const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
+			cancelBtn.addEventListener('click', () => {
+				modal.close();
+				resolve(false);
+			});
+
+			const deleteBtn = buttonContainer.createEl('button', { text: 'Delete', cls: 'mod-warning' });
+			deleteBtn.addEventListener('click', () => {
+				modal.close();
+				resolve(true);
+			});
+
+			modal.open();
+		});
+
+		if (!confirmed) {
+			return;
+		}
+
+		// Check if we're deleting the active file
+		const activeFile = this.app.workspace.getActiveFile();
+		const isActiveFile = activeFile && activeFile.path === node.file.path;
+		const isActiveDescendant = activeFile && descendants.some(d => d.file.path === activeFile.path);
+
+		// Delete all descendants first (from deepest to shallowest)
+		const sortedDescendants = descendants.sort((a, b) => b.level.length - a.level.length);
+		for (const descendant of sortedDescendants) {
+			try {
+				await this.app.vault.delete(descendant.file);
+			} catch (error) {
+				new Notice(`Failed to delete ${descendant.file.name}: ${error.message}`);
+				return;
+			}
+		}
+
+		// Delete the main note
+		try {
+			await this.app.vault.delete(node.file);
+			new Notice(`Deleted ${totalNotes} note${totalNotes > 1 ? 's' : ''}`);
+
+			// If we deleted the active file, close the leaf
+			if (isActiveFile || isActiveDescendant) {
+				const leaves = this.app.workspace.getLeavesOfType('markdown');
+				for (const leaf of leaves) {
+					const view = leaf.view;
+					if (view instanceof MarkdownView) {
+						const viewFile = view.file;
+						if (viewFile && (viewFile.path === node.file.path ||
+							descendants.some(d => d.file.path === viewFile.path))) {
+							leaf.detach();
+						}
+					}
+				}
+			}
+
+			// Refresh view
+			await this.refresh();
+		} catch (error) {
+			new Notice(`Failed to delete ${node.file.name}: ${error.message}`);
+		}
+	}
+
 	renderNode(container: HTMLElement, node: SubnoteNode, depth: number, isRoot: boolean = false): void {
 		const nodeEl = container.createEl('div', { cls: 'subnotes-node' });
 		nodeEl.style.paddingLeft = `${depth * 20}px`;
@@ -296,6 +450,32 @@ class SubnotesView extends ItemView {
 				// For child notes or already selected root, just open the file
 				await this.app.workspace.getLeaf(false).openFile(node.file);
 			}
+		});
+
+		// Add context menu (right-click) handler
+		nameEl.addEventListener('contextmenu', (e) => {
+			e.preventDefault();
+			const menu = new Menu();
+
+			// Add "Create a new subnote" menu item
+			menu.addItem((item) => {
+				item.setTitle("Create a new subnote")
+					.setIcon("plus")
+					.onClick(async () => {
+						await this.createSubnoteOfNode(node);
+					});
+			});
+
+			// Add "Delete this note" menu item
+			menu.addItem((item) => {
+				item.setTitle("Delete this note")
+					.setIcon("trash")
+					.onClick(async () => {
+						await this.deleteNodeWithDescendants(node);
+					});
+			});
+
+			menu.showAtMouseEvent(e);
 		});
 
 		// Render children
