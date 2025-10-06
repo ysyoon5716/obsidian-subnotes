@@ -713,9 +713,9 @@ class SubnotesView extends ItemView {
 
 	renderNode(container: HTMLElement, node: SubnoteNode, depth: number, isRoot: boolean = false): void {
 		const nodeEl = container.createEl('div', { cls: 'subnotes-node' });
-		nodeEl.style.paddingLeft = `${depth * 20}px`;
 
 		const contentEl = nodeEl.createEl('div', { cls: 'subnotes-node-content' });
+		contentEl.style.paddingLeft = `${depth * 16}px`;
 
 		// Make draggable
 		contentEl.draggable = true;
