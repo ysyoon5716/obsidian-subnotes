@@ -2,10 +2,12 @@ import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Set
 
 interface SubnotesSettings {
 	notesFolder: string;
+	templatePath: string;
 }
 
 const DEFAULT_SETTINGS: SubnotesSettings = {
-	notesFolder: 'notes'
+	notesFolder: 'notes',
+	templatePath: ''
 }
 
 // Data structures for subnotes
@@ -50,6 +52,32 @@ function extractTitle(app: App, file: TFile): string | null {
 		return cache.frontmatter.title;
 	}
 	return null;
+}
+
+// Get the next available child level number for a parent
+function getNextChildLevel(parentLevel: number[], existingChildren: SubnoteNode[]): number[] {
+	if (existingChildren.length === 0) {
+		return [...parentLevel, 1];
+	}
+
+	// Find the maximum last level number among direct children
+	let maxLevel = 0;
+	for (const child of existingChildren) {
+		const lastNum = child.level[child.level.length - 1];
+		if (lastNum > maxLevel) {
+			maxLevel = lastNum;
+		}
+	}
+
+	return [...parentLevel, maxLevel + 1];
+}
+
+// Generate filename from timestamp and level array
+function generateSubnoteFilename(timestamp: string, level: number[]): string {
+	if (level.length === 0) {
+		return `${timestamp}.md`;
+	}
+	return `${timestamp}.${level.join('.')}.md`;
 }
 
 const VIEW_TYPE_SUBNOTES = "subnotes-view";
@@ -263,6 +291,84 @@ export default class SubnotesPlugin extends Plugin {
 			}
 		});
 
+		// Add command to create subnote of active note
+		this.addCommand({
+			id: 'create-subnote-of-active',
+			name: 'Create Subnote of Active Note',
+			callback: async () => {
+				// Get active file
+				const activeFile = this.app.workspace.getActiveFile();
+				if (!activeFile) {
+					new Notice('No active note');
+					return;
+				}
+
+				// Check if file is in configured notes folder
+				const notesFolder = this.settings.notesFolder;
+				if (!activeFile.path.startsWith(notesFolder + '/')) {
+					new Notice('Active note is not in the configured subnotes folder');
+					return;
+				}
+
+				// Parse the active file's name to get timestamp and level
+				const parsed = parseSubnoteFilename(activeFile.name);
+				if (!parsed) {
+					new Notice('Active note is not a valid subnote');
+					return;
+				}
+
+				const { timestamp, level: parentLevel } = parsed;
+
+				// Get all files to find existing children
+				const files = this.app.vault.getMarkdownFiles();
+				const existingChildren: SubnoteNode[] = [];
+
+				for (const file of files) {
+					if (!file.path.startsWith(notesFolder + '/')) continue;
+
+					const fileParsed = parseSubnoteFilename(file.name);
+					if (fileParsed && fileParsed.timestamp === timestamp && isDirectChild(fileParsed.level, parentLevel)) {
+						existingChildren.push({
+							name: file.basename,
+							path: file.path,
+							file: file,
+							title: extractTitle(this.app, file),
+							children: [],
+							level: fileParsed.level
+						});
+					}
+				}
+
+				// Calculate next level
+				const newLevel = getNextChildLevel(parentLevel, existingChildren);
+
+				// Generate new filename
+				const newFilename = generateSubnoteFilename(timestamp, newLevel);
+				const newFilePath = `${notesFolder}/${newFilename}`;
+
+				// Get template content if configured
+				let content = '';
+				if (this.settings.templatePath) {
+					const templateFile = this.app.vault.getAbstractFileByPath(this.settings.templatePath);
+					if (templateFile instanceof TFile) {
+						content = await this.app.vault.read(templateFile);
+					} else {
+						new Notice('Template file not found, creating blank note');
+					}
+				}
+
+				// Create the new file
+				try {
+					const newFile = await this.app.vault.create(newFilePath, content);
+					// Open the new file
+					await this.app.workspace.getLeaf(false).openFile(newFile);
+					new Notice(`Created subnote: ${newFilename}`);
+				} catch (error) {
+					new Notice(`Failed to create subnote: ${error.message}`);
+				}
+			}
+		});
+
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SubnotesSettingTab(this.app, this));
 
@@ -348,6 +454,17 @@ class SubnotesSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					// Refresh all views when settings change
 					await this.plugin.refreshAllViews();
+				}));
+
+		new Setting(containerEl)
+			.setName('Template file path')
+			.setDesc('Optional template file to use when creating new subnotes (leave empty for blank notes)')
+			.addText(text => text
+				.setPlaceholder('templates/subnote-template.md')
+				.setValue(this.plugin.settings.templatePath)
+				.onChange(async (value) => {
+					this.plugin.settings.templatePath = value;
+					await this.plugin.saveSettings();
 				}));
 	}
 }
