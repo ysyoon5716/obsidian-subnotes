@@ -534,6 +534,23 @@ export default class SubnotesPlugin extends Plugin {
 			(leaf) => new SubnotesView(leaf, this)
 		);
 
+		// Auto-initialize the view when workspace is ready
+		this.app.workspace.onLayoutReady(() => {
+			const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_SUBNOTES);
+
+			// Only create view if it doesn't already exist
+			if (leaves.length === 0) {
+				const leaf = this.app.workspace.getRightLeaf(false);
+				if (leaf) {
+					leaf.setViewState({
+						type: VIEW_TYPE_SUBNOTES,
+						active: true,
+					});
+					this.app.workspace.revealLeaf(leaf);
+				}
+			}
+		});
+
 		// Add ribbon icon to toggle subnotes view
 		this.addRibbonIcon('layers', 'Toggle Subnotes View', () => {
 			this.toggleSubnotesView();

@@ -147,6 +147,13 @@ await this.refreshAllViews(); // Refresh all open views
 
 ## Changelog
 
+### v1.0.9 (2025-10-06)
+- Added auto-initialization of subnote view on plugin activation
+- View now automatically opens in right sidebar when Obsidian starts
+- Uses `app.workspace.onLayoutReady()` to ensure workspace is fully initialized
+- Only creates view if it doesn't already exist (respects existing state)
+- Users can still manually toggle view on/off as before
+
 ### v1.0.8 (2025-10-06)
 - Fixed collapse/expand icons to match Obsidian's file explorer
 - Changed from triangle icons to chevron icons (`chevron-right` / `chevron-down`)
@@ -209,4 +216,4 @@ await this.refreshAllViews(); // Refresh all open views
 
 ---
 
-*Last Updated: 2025-10-06 (v1.0.8)*
+*Last Updated: 2025-10-06 (v1.0.9)*
