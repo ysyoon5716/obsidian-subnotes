@@ -147,6 +147,14 @@ await this.refreshAllViews(); // Refresh all open views
 
 ## Changelog
 
+### v1.0.8 (2025-10-06)
+- Fixed collapse/expand icons to match Obsidian's file explorer
+- Changed from triangle icons to chevron icons (`chevron-right` / `chevron-down`)
+- Fixed icon disappearing issue during collapse/expand toggle
+- Improved icon toggle logic using `innerHTML = ''` instead of `empty()`
+- Added CSS rule for proper SVG icon scaling within container
+- Imported `setIcon` from Obsidian API for native icon rendering
+
 ### v1.0.7 (2025-10-06)
 - Added right-click context menu on note titles in tree view
 - Added "Create a new subnote" context menu item
@@ -201,4 +209,4 @@ await this.refreshAllViews(); // Refresh all open views
 
 ---
 
-*Last Updated: 2025-10-06*
+*Last Updated: 2025-10-06 (v1.0.8)*

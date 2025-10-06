@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, SuggestModal, Menu } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, SuggestModal, Menu, setIcon } from 'obsidian';
 
 interface SubnotesSettings {
 	notesFolder: string;
@@ -428,11 +428,12 @@ class SubnotesView extends ItemView {
 		// Collapse/expand icon
 		if (node.children.length > 0) {
 			const collapseIcon = contentEl.createEl('span', { cls: 'subnotes-collapse-icon' });
-			collapseIcon.setText('▼');
+			setIcon(collapseIcon, 'chevron-down');
 			collapseIcon.addEventListener('click', (e) => {
 				e.stopPropagation();
 				nodeEl.toggleClass('collapsed', !nodeEl.hasClass('collapsed'));
-				collapseIcon.setText(nodeEl.hasClass('collapsed') ? '▶' : '▼');
+				collapseIcon.innerHTML = '';
+				setIcon(collapseIcon, nodeEl.hasClass('collapsed') ? 'chevron-right' : 'chevron-down');
 			});
 		} else {
 			contentEl.createEl('span', { cls: 'subnotes-collapse-icon-placeholder' });
