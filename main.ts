@@ -382,6 +382,17 @@ export default class SubnotesPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('rename', () => this.refreshAllViews())
 		);
+
+		// Watch for metadata changes (including YAML frontmatter title updates)
+		this.registerEvent(
+			this.app.metadataCache.on('changed', (file) => {
+				// Only refresh if file is a subnote in configured folder
+				if (file.path.startsWith(this.settings.notesFolder + '/') &&
+					parseSubnoteFilename(file.name)) {
+					this.refreshAllViews();
+				}
+			})
+		);
 	}
 
 	async toggleSubnotesView() {
