@@ -108,6 +108,7 @@ class SubnotesView extends ItemView {
 	plugin: SubnotesPlugin;
 	rootNodes: SubnoteNode[] = [];
 	selectedRootTimestamp: string | null = null;
+	collapseStates: Map<string, boolean> = new Map(); // Track collapse state by node path
 
 	constructor(leaf: WorkspaceLeaf, plugin: SubnotesPlugin) {
 		super(leaf);
@@ -848,12 +849,24 @@ class SubnotesView extends ItemView {
 		// Collapse/expand icon
 		if (node.children.length > 0) {
 			const collapseIcon = contentEl.createEl('span', { cls: 'subnotes-collapse-icon' });
-			setIcon(collapseIcon, 'chevron-down');
+
+			// Restore collapse state if previously saved
+			const isCollapsed = this.collapseStates.get(node.path) || false;
+			if (isCollapsed) {
+				nodeEl.addClass('collapsed');
+			}
+
+			setIcon(collapseIcon, isCollapsed ? 'chevron-right' : 'chevron-down');
 			collapseIcon.addEventListener('click', (e) => {
 				e.stopPropagation();
-				nodeEl.toggleClass('collapsed', !nodeEl.hasClass('collapsed'));
+				const newCollapsedState = !nodeEl.hasClass('collapsed');
+				nodeEl.toggleClass('collapsed', newCollapsedState);
+
+				// Save collapse state
+				this.collapseStates.set(node.path, newCollapsedState);
+
 				collapseIcon.innerHTML = '';
-				setIcon(collapseIcon, nodeEl.hasClass('collapsed') ? 'chevron-right' : 'chevron-down');
+				setIcon(collapseIcon, newCollapsedState ? 'chevron-right' : 'chevron-down');
 			});
 		} else {
 			contentEl.createEl('span', { cls: 'subnotes-collapse-icon-placeholder' });
