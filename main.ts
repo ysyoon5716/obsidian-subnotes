@@ -850,8 +850,8 @@ class SubnotesView extends ItemView {
 		if (node.children.length > 0) {
 			const collapseIcon = contentEl.createEl('span', { cls: 'subnotes-collapse-icon' });
 
-			// Restore collapse state if previously saved
-			const isCollapsed = this.collapseStates.get(node.path) || false;
+			// Restore collapse state if previously saved, default to collapsed (true)
+			const isCollapsed = this.collapseStates.get(node.path) ?? true;
 			if (isCollapsed) {
 				nodeEl.addClass('collapsed');
 			}
