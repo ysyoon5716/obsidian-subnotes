@@ -138,13 +138,8 @@ class SubnotesView extends ItemView {
 		} else {
 			// Use parent directory of active file
 			this.currentDirectory = activeFile.parent?.path || '';
-			const parsed = parseSubnoteFilename(activeFile.name);
-			if (parsed) {
-				// Get root level (first number only)
-				this.selectedRootLevel = [parsed.level[0]];
-			} else {
-				this.selectedRootLevel = null;
-			}
+			// Always show all roots regardless of active file
+			this.selectedRootLevel = null;
 		}
 
 		this.render();
@@ -1463,13 +1458,8 @@ export default class SubnotesPlugin extends Plugin {
 
 						view.currentDirectory = directory;
 
-						if (parsed) {
-							// Extract root level (first number)
-							view.selectedRootLevel = [parsed.level[0]];
-						} else {
-							// Not a valid subnote, but still show directory contents
-							view.selectedRootLevel = null;
-						}
+						// Always show all roots regardless of active file
+						view.selectedRootLevel = null;
 
 						// Rebuild tree if directory changed
 						if (directoryChanged) {
