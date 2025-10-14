@@ -1,35 +1,37 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, SuggestModal, Menu, setIcon } from 'obsidian';
 
 interface SubnotesSettings {
-	notesFolder: string;
 	templatePath: string;
 }
 
 const DEFAULT_SETTINGS: SubnotesSettings = {
-	notesFolder: 'notes',
 	templatePath: ''
 }
 
 // Data structures for subnotes
 interface SubnoteNode {
-	name: string;
+	name: string; // Full filename
 	path: string;
 	file: TFile;
-	title: string | null;
+	title: string | null; // From YAML frontmatter
+	displayTitle: string; // Extracted from filename (e.g., "Related Works" from "2.Related Works.md")
 	children: SubnoteNode[];
 	level: number[];
 }
 
 // Utility functions for parsing subnote filenames
-function parseSubnoteFilename(filename: string): { timestamp: string; level: number[] } | null {
-	const match = filename.match(/^(\d{12})(?:\.(\d+(?:\.\d+)*))?\.md$/);
+// New format: x.y.title.md (e.g., "2.Related Works.md", "2.1.ESRGAN.md")
+function parseSubnoteFilename(filename: string): { level: number[]; title: string } | null {
+	// Match patterns like: "1. Title.md", "2.1. Title with spaces.md", "3.2.1. Complex Title.md"
+	// Also supports without space: "1.Title.md" for backward compatibility
+	const match = filename.match(/^(\d+(?:\.\d+)*)\. ?(.+)\.md$/);
 	if (!match) return null;
 
-	const timestamp = match[1];
-	const levelStr = match[2];
-	const level = levelStr ? levelStr.split('.').map(Number) : [];
+	const levelStr = match[1];
+	const title = match[2];
+	const level = levelStr.split('.').map(Number);
 
-	return { timestamp, level };
+	return { level, title };
 }
 
 function isSubnoteOf(childLevel: number[], parentLevel: number[]): boolean {
@@ -72,22 +74,19 @@ function getNextChildLevel(parentLevel: number[], existingChildren: SubnoteNode[
 	return [...parentLevel, maxLevel + 1];
 }
 
-// Generate filename from timestamp and level array
-function generateSubnoteFilename(timestamp: string, level: number[]): string {
-	if (level.length === 0) {
-		return `${timestamp}.md`;
-	}
-	return `${timestamp}.${level.join('.')}.md`;
+// Generate filename from level array and title
+function generateSubnoteFilename(level: number[], title: string): string {
+	return `${level.join('.')}. ${title}.md`;
 }
 
 // Get all descendants of a given note
-function getAllDescendants(timestamp: string, level: number[], allFiles: TFile[]): Array<{ file: TFile; level: number[] }> {
-	const descendants: Array<{ file: TFile; level: number[] }> = [];
+function getAllDescendants(level: number[], allFiles: TFile[]): Array<{ file: TFile; level: number[]; title: string }> {
+	const descendants: Array<{ file: TFile; level: number[]; title: string }> = [];
 
 	for (const file of allFiles) {
 		const parsed = parseSubnoteFilename(file.name);
-		if (parsed && parsed.timestamp === timestamp && isSubnoteOf(parsed.level, level)) {
-			descendants.push({ file, level: parsed.level });
+		if (parsed && isSubnoteOf(parsed.level, level)) {
+			descendants.push({ file, level: parsed.level, title: parsed.title });
 		}
 	}
 
@@ -107,7 +106,8 @@ const VIEW_TYPE_SUBNOTES = "subnotes-view";
 class SubnotesView extends ItemView {
 	plugin: SubnotesPlugin;
 	rootNodes: SubnoteNode[] = [];
-	selectedRootTimestamp: string | null = null;
+	currentDirectory: string | null = null; // Track current directory
+	selectedRootLevel: number[] | null = null; // Track selected root by level instead of timestamp
 	collapseStates: Map<string, boolean> = new Map(); // Track collapse state by node path
 
 	constructor(leaf: WorkspaceLeaf, plugin: SubnotesPlugin) {
@@ -133,16 +133,18 @@ class SubnotesView extends ItemView {
 		// Set initial state based on active file
 		const activeFile = this.app.workspace.getActiveFile();
 		if (!activeFile) {
-			this.selectedRootTimestamp = '';
-		} else if (activeFile.path.startsWith(this.plugin.settings.notesFolder + '/')) {
+			this.currentDirectory = null;
+			this.selectedRootLevel = null;
+		} else {
+			// Use parent directory of active file
+			this.currentDirectory = activeFile.parent?.path || '';
 			const parsed = parseSubnoteFilename(activeFile.name);
 			if (parsed) {
-				this.selectedRootTimestamp = parsed.timestamp;
+				// Get root level (first number only)
+				this.selectedRootLevel = [parsed.level[0]];
 			} else {
-				this.selectedRootTimestamp = '';
+				this.selectedRootLevel = null;
 			}
-		} else {
-			this.selectedRootTimestamp = '';
 		}
 
 		this.render();
@@ -158,44 +160,48 @@ class SubnotesView extends ItemView {
 	}
 
 	async buildSubnoteTree(): Promise<SubnoteNode[]> {
-		const files = this.app.vault.getMarkdownFiles();
-		const notesFolder = this.plugin.settings.notesFolder;
+		if (!this.currentDirectory) return [];
 
-		// Parse all subnote files
-		const parsedNotes: Array<{ file: TFile; timestamp: string; level: number[] }> = [];
+		const files = this.app.vault.getMarkdownFiles();
+
+		// Parse all subnote files in current directory
+		const parsedNotes: Array<{ file: TFile; level: number[]; title: string }> = [];
 		for (const file of files) {
-			if (!file.path.startsWith(notesFolder + '/')) continue;
+			// Only include files from current directory
+			if (file.parent?.path !== this.currentDirectory) continue;
 
 			const parsed = parseSubnoteFilename(file.name);
 			if (parsed) {
-				parsedNotes.push({ file, timestamp: parsed.timestamp, level: parsed.level });
+				parsedNotes.push({ file, level: parsed.level, title: parsed.title });
 			}
 		}
 
-		// Group by timestamp
-		const notesByTimestamp = new Map<string, typeof parsedNotes>();
+		// Group by root level (first number)
+		const notesByRoot = new Map<number, typeof parsedNotes>();
 		for (const note of parsedNotes) {
-			if (!notesByTimestamp.has(note.timestamp)) {
-				notesByTimestamp.set(note.timestamp, []);
+			const rootLevel = note.level[0];
+			if (!notesByRoot.has(rootLevel)) {
+				notesByRoot.set(rootLevel, []);
 			}
-			notesByTimestamp.get(note.timestamp)!.push(note);
+			notesByRoot.get(rootLevel)!.push(note);
 		}
 
-		// Build tree for each timestamp group
+		// Build tree for each root group
 		const allRoots: SubnoteNode[] = [];
-		for (const [timestamp, notes] of notesByTimestamp) {
+		for (const [rootLevel, notes] of notesByRoot) {
 			// Sort by level depth
 			notes.sort((a, b) => a.level.length - b.level.length);
 
-			// Find root (level length 0)
-			const root = notes.find(n => n.level.length === 0);
+			// Find root (level length 1, e.g., [2] for "2.Title.md")
+			const root = notes.find(n => n.level.length === 1);
 			if (!root) continue;
 
 			const rootNode: SubnoteNode = {
-				name: root.file.basename,
+				name: root.file.name,
 				path: root.file.path,
 				file: root.file,
 				title: extractTitle(this.app, root.file),
+				displayTitle: root.title,
 				children: [],
 				level: root.level
 			};
@@ -205,20 +211,21 @@ class SubnotesView extends ItemView {
 			allRoots.push(rootNode);
 		}
 
-		// Sort roots by timestamp (most recent first)
-		allRoots.sort((a, b) => b.name.localeCompare(a.name));
+		// Sort roots by level number
+		allRoots.sort((a, b) => a.level[0] - b.level[0]);
 
 		return allRoots;
 	}
 
-	buildChildren(parent: SubnoteNode, allNotes: Array<{ file: TFile; timestamp: string; level: number[] }>): void {
+	buildChildren(parent: SubnoteNode, allNotes: Array<{ file: TFile; level: number[]; title: string }>): void {
 		for (const note of allNotes) {
 			if (isDirectChild(note.level, parent.level)) {
 				const childNode: SubnoteNode = {
-					name: note.file.basename,
+					name: note.file.name,
 					path: note.file.path,
 					file: note.file,
 					title: extractTitle(this.app, note.file),
+					displayTitle: note.title,
 					children: [],
 					level: note.level
 				};
@@ -243,8 +250,8 @@ class SubnotesView extends ItemView {
 		container.empty();
 		container.addClass('subnotes-view-container');
 
-		// Show empty state if no active note (marker set to empty string)
-		if (this.selectedRootTimestamp === '') {
+		// Show empty state if no current directory
+		if (!this.currentDirectory) {
 			container.createEl('div', { text: 'No active note', cls: 'subnotes-empty' });
 			return;
 		}
@@ -255,8 +262,8 @@ class SubnotesView extends ItemView {
 		}
 
 		// Filter root nodes based on selection
-		const displayRoots = this.selectedRootTimestamp
-			? this.rootNodes.filter(root => root.name === this.selectedRootTimestamp)
+		const displayRoots = this.selectedRootLevel
+			? this.rootNodes.filter(root => root.level[0] === this.selectedRootLevel![0])
 			: this.rootNodes;
 
 		const treeContainer = container.createEl('div', { cls: 'subnotes-tree' });
@@ -267,31 +274,36 @@ class SubnotesView extends ItemView {
 	}
 
 	async createSubnoteOfNode(node: SubnoteNode): Promise<void> {
-		const notesFolder = this.plugin.settings.notesFolder;
+		if (!this.currentDirectory) {
+			new Notice('No active directory');
+			return;
+		}
 
-		// Parse the node's filename to get timestamp and level
+		// Parse the node's filename to get level
 		const parsed = parseSubnoteFilename(node.file.name);
 		if (!parsed) {
 			new Notice('Invalid subnote format');
 			return;
 		}
 
-		const { timestamp, level: parentLevel } = parsed;
+		const { level: parentLevel } = parsed;
 
 		// Get all files to find existing children
 		const files = this.app.vault.getMarkdownFiles();
 		const existingChildren: SubnoteNode[] = [];
 
 		for (const file of files) {
-			if (!file.path.startsWith(notesFolder + '/')) continue;
+			// Only check files in current directory
+			if (file.parent?.path !== this.currentDirectory) continue;
 
 			const fileParsed = parseSubnoteFilename(file.name);
-			if (fileParsed && fileParsed.timestamp === timestamp && isDirectChild(fileParsed.level, parentLevel)) {
+			if (fileParsed && isDirectChild(fileParsed.level, parentLevel)) {
 				existingChildren.push({
-					name: file.basename,
+					name: file.name,
 					path: file.path,
 					file: file,
 					title: extractTitle(this.app, file),
+					displayTitle: fileParsed.title,
 					children: [],
 					level: fileParsed.level
 				});
@@ -301,9 +313,13 @@ class SubnotesView extends ItemView {
 		// Calculate next level
 		const newLevel = getNextChildLevel(parentLevel, existingChildren);
 
+		// Prompt for title
+		const title = await this.promptForTitle('Enter title for new subnote');
+		if (!title) return;
+
 		// Generate new filename
-		const newFilename = generateSubnoteFilename(timestamp, newLevel);
-		const newFilePath = `${notesFolder}/${newFilename}`;
+		const newFilename = generateSubnoteFilename(newLevel, title);
+		const newFilePath = `${this.currentDirectory}/${newFilename}`;
 
 		// Get template content if configured
 		let content = '';
@@ -327,6 +343,52 @@ class SubnotesView extends ItemView {
 		}
 	}
 
+	async promptForTitle(placeholder: string): Promise<string | null> {
+		return new Promise((resolve) => {
+			const modal = new Modal(this.app);
+			modal.titleEl.setText('New Subnote');
+
+			const inputEl = modal.contentEl.createEl('input', {
+				type: 'text',
+				attr: { placeholder }
+			});
+			inputEl.style.width = '100%';
+			inputEl.style.padding = '8px';
+			inputEl.style.marginBottom = '16px';
+
+			const buttonContainer = modal.contentEl.createEl('div', { cls: 'modal-button-container' });
+			buttonContainer.style.display = 'flex';
+			buttonContainer.style.justifyContent = 'flex-end';
+			buttonContainer.style.gap = '8px';
+
+			const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
+			cancelBtn.addEventListener('click', () => {
+				modal.close();
+				resolve(null);
+			});
+
+			const createBtn = buttonContainer.createEl('button', { text: 'Create', cls: 'mod-cta' });
+			createBtn.addEventListener('click', () => {
+				const title = inputEl.value.trim();
+				if (title) {
+					modal.close();
+					resolve(title);
+				} else {
+					new Notice('Title cannot be empty');
+				}
+			});
+
+			inputEl.addEventListener('keypress', (e) => {
+				if (e.key === 'Enter') {
+					createBtn.click();
+				}
+			});
+
+			modal.open();
+			setTimeout(() => inputEl.focus(), 100);
+		});
+	}
+
 	async deleteNodeWithDescendants(node: SubnoteNode): Promise<void> {
 		// Parse the node's filename
 		const parsed = parseSubnoteFilename(node.file.name);
@@ -335,17 +397,18 @@ class SubnotesView extends ItemView {
 			return;
 		}
 
-		const { timestamp, level } = parsed;
+		const { level } = parsed;
 
 		// Get all descendants
 		const allFiles = this.app.vault.getMarkdownFiles();
-		const descendants = getAllDescendants(timestamp, level, allFiles);
+		const descendants = getAllDescendants(level, allFiles);
 
 		// Show confirmation modal
 		const totalNotes = 1 + descendants.length;
+		const displayName = node.title || node.displayTitle || node.name;
 		const message = descendants.length > 0
-			? `Delete "${node.title || node.name}" and ${descendants.length} descendant note${descendants.length > 1 ? 's' : ''}? (${totalNotes} total)`
-			: `Delete "${node.title || node.name}"?`;
+			? `Delete "${displayName}" and ${descendants.length} descendant note${descendants.length > 1 ? 's' : ''}? (${totalNotes} total)`
+			: `Delete "${displayName}"?`;
 
 		const confirmed = await new Promise<boolean>((resolve) => {
 			const modal = new Modal(this.app);
@@ -421,12 +484,15 @@ class SubnotesView extends ItemView {
 	}
 
 	async reorderNode(
-		dragData: { path: string; timestamp: string; level: number[]; isRoot: boolean },
+		dragData: { path: string; level: number[]; title: string; isRoot: boolean },
 		targetNode: SubnoteNode,
 		makeChild: boolean,
 		insertBefore: boolean
 	): Promise<void> {
-		const notesFolder = this.plugin.settings.notesFolder;
+		if (!this.currentDirectory) {
+			new Notice('No active directory');
+			return;
+		}
 
 		// Get dragged file
 		const draggedFile = this.app.vault.getAbstractFileByPath(dragData.path);
@@ -449,41 +515,40 @@ class SubnotesView extends ItemView {
 
 		// Validation: Cannot drop onto descendants
 		const allFiles = this.app.vault.getMarkdownFiles();
-		const draggedDescendants = getAllDescendants(dragData.timestamp, dragData.level, allFiles);
+		const draggedDescendants = getAllDescendants(dragData.level, allFiles);
 		if (draggedDescendants.some(d => d.file.path === targetNode.path)) {
 			new Notice('Cannot drop note onto its own descendant');
 			return;
 		}
 
-		// Validation: Root notes can only be reordered among roots (different timestamps must stay separate)
-		if (dragData.isRoot && dragData.timestamp !== targetParsed.timestamp) {
-			new Notice('Root notes cannot be moved to different timestamp hierarchies');
+		// Validation: Root notes from different root numbers cannot be merged
+		if (dragData.isRoot && targetNode.level.length === 1 && dragData.level[0] !== targetNode.level[0]) {
+			new Notice('Root notes with different numbers cannot be merged');
 			return;
 		}
 
-		// Calculate new level and timestamp for dragged node
-		let newTimestamp: string;
+		// Calculate new level for dragged node
 		let newLevel: number[];
 		let targetParentLevel: number[];
 
 		if (makeChild) {
 			// Drop as child of target
-			newTimestamp = targetParsed.timestamp;
 			targetParentLevel = targetParsed.level;
 
-			// Find existing children of target
+			// Find existing children of target in current directory
 			const targetChildren: SubnoteNode[] = [];
 			for (const file of allFiles) {
-				if (!file.path.startsWith(notesFolder + '/')) continue;
+				if (file.parent?.path !== this.currentDirectory) continue;
 				const parsed = parseSubnoteFilename(file.name);
-				if (parsed && parsed.timestamp === newTimestamp && isDirectChild(parsed.level, targetParentLevel)) {
+				if (parsed && isDirectChild(parsed.level, targetParentLevel)) {
 					// Skip the dragged node if it's already a child
 					if (file.path !== dragData.path) {
 						targetChildren.push({
-							name: file.basename,
+							name: file.name,
 							path: file.path,
 							file: file,
 							title: extractTitle(this.app, file),
+							displayTitle: parsed.title,
 							children: [],
 							level: parsed.level
 						});
@@ -495,23 +560,21 @@ class SubnotesView extends ItemView {
 			newLevel = getNextChildLevel(targetParentLevel, targetChildren);
 		} else {
 			// Drop as sibling of target (before or after)
-			newTimestamp = targetParsed.timestamp;
 			targetParentLevel = targetParsed.level.slice(0, -1);
 
 			// Detect if this is a same-parent move
 			const draggedParentLevel = dragData.level.slice(0, -1);
-			const isSameParent = dragData.timestamp === newTimestamp &&
-				JSON.stringify(draggedParentLevel) === JSON.stringify(targetParentLevel);
+			const isSameParent = JSON.stringify(draggedParentLevel) === JSON.stringify(targetParentLevel);
 
 			// Get all siblings of target (nodes with same parent)
-			const siblings: Array<{ file: TFile; level: number[] }> = [];
+			const siblings: Array<{ file: TFile; level: number[]; title: string }> = [];
 			for (const file of allFiles) {
-				if (!file.path.startsWith(notesFolder + '/')) continue;
+				if (file.parent?.path !== this.currentDirectory) continue;
 				const parsed = parseSubnoteFilename(file.name);
-				if (parsed && parsed.timestamp === newTimestamp && isDirectChild(parsed.level, targetParentLevel)) {
+				if (parsed && isDirectChild(parsed.level, targetParentLevel)) {
 					// Skip the dragged node
 					if (file.path !== dragData.path) {
-						siblings.push({ file, level: parsed.level });
+						siblings.push({ file, level: parsed.level, title: parsed.title });
 					}
 				}
 			}
@@ -574,17 +637,22 @@ class SubnotesView extends ItemView {
 				for (const op of renumberOps) {
 					const tempLevelNum = renumberOps.indexOf(op) + tempOffset;
 					const tempLevel = [...targetParentLevel, tempLevelNum];
-					const tempFilename = generateSubnoteFilename(newTimestamp, tempLevel);
-					const tempPath = `${notesFolder}/${tempFilename}`;
+
+					// Get the title from the file being renamed
+					const parsedOp = parseSubnoteFilename(op.file.name);
+					if (!parsedOp) continue;
+
+					const tempFilename = generateSubnoteFilename(tempLevel, parsedOp.title);
+					const tempPath = `${this.currentDirectory}/${tempFilename}`;
 
 					// Rename descendants first
-					const descendants = getAllDescendants(newTimestamp, op.oldLevel, allFiles);
+					const descendants = getAllDescendants(op.oldLevel, allFiles);
 					descendants.sort((a, b) => b.level.length - a.level.length);
 
 					for (const descendant of descendants) {
 						const transformedLevel = transformLevel(descendant.level, op.oldLevel, tempLevel);
-						const tempDescFilename = generateSubnoteFilename(newTimestamp, transformedLevel);
-						const tempDescPath = `${notesFolder}/${tempDescFilename}`;
+						const tempDescFilename = generateSubnoteFilename(transformedLevel, descendant.title);
+						const tempDescPath = `${this.currentDirectory}/${tempDescFilename}`;
 						await this.app.vault.rename(descendant.file, tempDescPath);
 					}
 
@@ -595,22 +663,27 @@ class SubnotesView extends ItemView {
 				for (const op of renumberOps) {
 					const tempLevelNum = renumberOps.indexOf(op) + tempOffset;
 					const tempLevel = [...targetParentLevel, tempLevelNum];
-					const tempFilename = generateSubnoteFilename(newTimestamp, tempLevel);
-					const tempPath = `${notesFolder}/${tempFilename}`;
 
-					const finalFilename = generateSubnoteFilename(newTimestamp, op.newLevel);
-					const finalPath = `${notesFolder}/${finalFilename}`;
-
+					// Get the title from the temp file
+					const tempFilename = generateSubnoteFilename(tempLevel, "temp");
+					const tempPath = `${this.currentDirectory}/${tempFilename}`;
 					const tempFile = this.app.vault.getAbstractFileByPath(tempPath);
+
 					if (tempFile instanceof TFile) {
+						const parsedTemp = parseSubnoteFilename(tempFile.name);
+						if (!parsedTemp) continue;
+
+						const finalFilename = generateSubnoteFilename(op.newLevel, parsedTemp.title);
+						const finalPath = `${this.currentDirectory}/${finalFilename}`;
+
 						// Rename descendants first
-						const descendants = getAllDescendants(newTimestamp, tempLevel, allFiles);
+						const descendants = getAllDescendants(tempLevel, allFiles);
 						descendants.sort((a, b) => b.level.length - a.level.length);
 
 						for (const descendant of descendants) {
 							const transformedLevel = transformLevel(descendant.level, tempLevel, op.newLevel);
-							const finalDescFilename = generateSubnoteFilename(newTimestamp, transformedLevel);
-							const finalDescPath = `${notesFolder}/${finalDescFilename}`;
+							const finalDescFilename = generateSubnoteFilename(transformedLevel, descendant.title);
+							const finalDescPath = `${this.currentDirectory}/${finalDescFilename}`;
 							await this.app.vault.rename(descendant.file, finalDescPath);
 						}
 
@@ -623,8 +696,8 @@ class SubnotesView extends ItemView {
 				newLevel = [...targetParentLevel, draggedIndex + 1];
 
 				// Skip the normal rename operation at the end
-				const newFilename = generateSubnoteFilename(newTimestamp, newLevel);
-				const newPath = `${notesFolder}/${newFilename}`;
+				const newFilename = generateSubnoteFilename(newLevel, dragData.title);
+				const newPath = `${this.currentDirectory}/${newFilename}`;
 				const currentFile = this.app.vault.getAbstractFileByPath(newPath);
 
 				if (currentFile) {
@@ -643,30 +716,30 @@ class SubnotesView extends ItemView {
 				newLevel = [...targetParentLevel, newLevelNum];
 
 				// Increment all siblings at or after insert position
-				const siblingsToRenumber: Array<{ file: TFile; oldLevel: number[]; newLevel: number[] }> = [];
+				const siblingsToRenumber: Array<{ file: TFile; oldLevel: number[]; newLevel: number[]; title: string }> = [];
 				for (const sibling of siblings) {
 					const siblingLevelNum = sibling.level[sibling.level.length - 1];
 					if (siblingLevelNum >= newLevelNum) {
 						const adjustedLevelNum = siblingLevelNum + 1;
 						const adjustedLevel = [...targetParentLevel, adjustedLevelNum];
-						siblingsToRenumber.push({ file: sibling.file, oldLevel: sibling.level, newLevel: adjustedLevel });
+						siblingsToRenumber.push({ file: sibling.file, oldLevel: sibling.level, newLevel: adjustedLevel, title: sibling.title });
 					}
 				}
 
 				// Renumber siblings first (in reverse order to avoid conflicts)
 				siblingsToRenumber.reverse();
 				for (const sibling of siblingsToRenumber) {
-					const newFilename = generateSubnoteFilename(newTimestamp, sibling.newLevel);
-					const newPath = `${notesFolder}/${newFilename}`;
+					const newFilename = generateSubnoteFilename(sibling.newLevel, sibling.title);
+					const newPath = `${this.currentDirectory}/${newFilename}`;
 
 					// Also rename descendants
-					const siblingDescendants = getAllDescendants(newTimestamp, sibling.oldLevel, allFiles);
+					const siblingDescendants = getAllDescendants(sibling.oldLevel, allFiles);
 					siblingDescendants.sort((a, b) => b.level.length - a.level.length); // Deepest first
 
 					for (const descendant of siblingDescendants) {
 						const transformedLevel = transformLevel(descendant.level, sibling.oldLevel, sibling.newLevel);
-						const newDescFilename = generateSubnoteFilename(newTimestamp, transformedLevel);
-						const newDescPath = `${notesFolder}/${newDescFilename}`;
+						const newDescFilename = generateSubnoteFilename(transformedLevel, descendant.title);
+						const newDescPath = `${this.currentDirectory}/${newDescFilename}`;
 						await this.app.vault.rename(descendant.file, newDescPath);
 					}
 
@@ -679,15 +752,15 @@ class SubnotesView extends ItemView {
 		const renameOps: Array<{ file: TFile; newPath: string }> = [];
 
 		// Add dragged node
-		const newFilename = generateSubnoteFilename(newTimestamp, newLevel);
-		const newPath = `${notesFolder}/${newFilename}`;
+		const newFilename = generateSubnoteFilename(newLevel, dragData.title);
+		const newPath = `${this.currentDirectory}/${newFilename}`;
 		renameOps.push({ file: draggedFile, newPath });
 
 		// Add descendants with transformed levels
 		for (const descendant of draggedDescendants) {
 			const transformedLevel = transformLevel(descendant.level, dragData.level, newLevel);
-			const newDescFilename = generateSubnoteFilename(newTimestamp, transformedLevel);
-			const newDescPath = `${notesFolder}/${newDescFilename}`;
+			const newDescFilename = generateSubnoteFilename(transformedLevel, descendant.title);
+			const newDescPath = `${this.currentDirectory}/${newDescFilename}`;
 			renameOps.push({ file: descendant.file, newPath: newDescPath });
 		}
 
@@ -721,7 +794,6 @@ class SubnotesView extends ItemView {
 		// Make draggable
 		contentEl.draggable = true;
 		contentEl.dataset.nodePath = node.path;
-		contentEl.dataset.nodeTimestamp = node.name.substring(0, 12);
 		contentEl.dataset.nodeLevel = JSON.stringify(node.level);
 		contentEl.dataset.isRoot = String(isRoot);
 
@@ -736,8 +808,8 @@ class SubnotesView extends ItemView {
 			// Store drag data
 			e.dataTransfer.setData('application/json', JSON.stringify({
 				path: node.path,
-				timestamp: node.name.substring(0, 12),
 				level: node.level,
+				title: node.displayTitle,
 				isRoot: isRoot
 			}));
 		});
@@ -872,9 +944,11 @@ class SubnotesView extends ItemView {
 			contentEl.createEl('span', { cls: 'subnotes-collapse-icon-placeholder' });
 		}
 
-		// Note name - display title if available, otherwise filename
-		const displayText = node.title || node.name;
-		const nameEl = contentEl.createEl('span', { cls: 'subnotes-node-name', text: displayText });
+		// Note name - display YAML title if available, otherwise display title from filename
+		const displayText = node.title || node.displayTitle || node.name;
+		const levelPrefix = node.level.join('.');
+		const fullDisplayText = `${levelPrefix}. ${displayText}`;
+		const nameEl = contentEl.createEl('span', { cls: 'subnotes-node-name', text: fullDisplayText });
 		nameEl.addEventListener('click', async () => {
 			// Always open the file on click
 			await this.app.workspace.getLeaf(false).openFile(node.file);
@@ -939,8 +1013,9 @@ class TargetParentSuggestModal extends SuggestModal<SubnoteNode> {
 	}
 
 	renderSuggestion(node: SubnoteNode, el: HTMLElement): void {
-		const displayText = node.title || node.name;
-		el.createEl("div", { text: displayText });
+		const displayText = node.title || node.displayTitle || node.name;
+		const levelPrefix = node.level.join('.');
+		el.createEl("div", { text: `${levelPrefix}. ${displayText}` });
 		el.createEl("small", { text: node.name, cls: "subnote-path" });
 	}
 
@@ -951,6 +1026,7 @@ class TargetParentSuggestModal extends SuggestModal<SubnoteNode> {
 
 export default class SubnotesPlugin extends Plugin {
 	settings: SubnotesSettings;
+	promptForTitle: (placeholder: string) => Promise<string | null>;
 
 	async onload() {
 		await this.loadSettings();
@@ -1019,41 +1095,37 @@ export default class SubnotesPlugin extends Plugin {
 					return;
 				}
 
-				// Check if file is in configured notes folder
-				const notesFolder = this.settings.notesFolder;
-				if (!activeFile.path.startsWith(notesFolder + '/')) {
-					new Notice('Active note is not in the configured subnotes folder');
-					return;
-				}
+				const directory = activeFile.parent?.path || '';
 
-				// Parse the active file's name to get timestamp and level
+				// Parse the active file's name to get level and title
 				const activeParsed = parseSubnoteFilename(activeFile.name);
 				if (!activeParsed) {
 					new Notice('Active note is not a valid subnote');
 					return;
 				}
 
-				const { timestamp: activeTimestamp, level: activeLevel } = activeParsed;
+				const { level: activeLevel, title: activeTitle } = activeParsed;
 
 				// Get all files and collect descendants of active note
 				const allFiles = this.app.vault.getMarkdownFiles();
-				const descendants = getAllDescendants(activeTimestamp, activeLevel, allFiles);
+				const descendants = getAllDescendants(activeLevel, allFiles);
 
-				// Build list of valid target parents (exclude active note and its descendants)
+				// Build list of valid target parents in same directory (exclude active note and its descendants)
 				const validTargets: SubnoteNode[] = [];
 				const excludedPaths = new Set([activeFile.path, ...descendants.map(d => d.file.path)]);
 
 				for (const file of allFiles) {
-					if (!file.path.startsWith(notesFolder + '/')) continue;
+					if (file.parent?.path !== directory) continue;
 					if (excludedPaths.has(file.path)) continue;
 
 					const parsed = parseSubnoteFilename(file.name);
 					if (parsed) {
 						validTargets.push({
-							name: file.basename,
+							name: file.name,
 							path: file.path,
 							file: file,
 							title: extractTitle(this.app, file),
+							displayTitle: parsed.title,
 							children: [],
 							level: parsed.level
 						});
@@ -1061,12 +1133,19 @@ export default class SubnotesPlugin extends Plugin {
 				}
 
 				if (validTargets.length === 0) {
-					new Notice('No valid target parent notes found');
+					new Notice('No valid target parent notes found in the same directory');
 					return;
 				}
 
-				// Sort targets by timestamp (most recent first)
-				validTargets.sort((a, b) => b.name.localeCompare(a.name));
+				// Sort targets by level
+				validTargets.sort((a, b) => {
+					for (let i = 0; i < Math.max(a.level.length, b.level.length); i++) {
+						const aVal = a.level[i] || 0;
+						const bVal = b.level[i] || 0;
+						if (aVal !== bVal) return aVal - bVal;
+					}
+					return 0;
+				});
 
 				// Show modal to select target parent
 				new TargetParentSuggestModal(this.app, this, validTargets, async (targetParent) => {
@@ -1078,20 +1157,21 @@ export default class SubnotesPlugin extends Plugin {
 							return;
 						}
 
-						const { timestamp: targetTimestamp, level: targetParentLevel } = targetParsed;
+						const { level: targetParentLevel } = targetParsed;
 
 						// Find existing children of target parent
 						const targetChildren: SubnoteNode[] = [];
 						for (const file of allFiles) {
-							if (!file.path.startsWith(notesFolder + '/')) continue;
+							if (file.parent?.path !== directory) continue;
 
 							const parsed = parseSubnoteFilename(file.name);
-							if (parsed && parsed.timestamp === targetTimestamp && isDirectChild(parsed.level, targetParentLevel)) {
+							if (parsed && isDirectChild(parsed.level, targetParentLevel)) {
 								targetChildren.push({
-									name: file.basename,
+									name: file.name,
 									path: file.path,
 									file: file,
 									title: extractTitle(this.app, file),
+									displayTitle: parsed.title,
 									children: [],
 									level: parsed.level
 								});
@@ -1105,15 +1185,15 @@ export default class SubnotesPlugin extends Plugin {
 						const renameOps: Array<{ oldPath: string; newPath: string }> = [];
 
 						// Add active note rename
-						const newActiveFilename = generateSubnoteFilename(targetTimestamp, newLevel);
-						const newActivePath = `${notesFolder}/${newActiveFilename}`;
+						const newActiveFilename = generateSubnoteFilename(newLevel, activeTitle);
+						const newActivePath = `${directory}/${newActiveFilename}`;
 						renameOps.push({ oldPath: activeFile.path, newPath: newActivePath });
 
 						// Add descendant renames with transformed levels
 						for (const descendant of descendants) {
 							const transformedLevel = transformLevel(descendant.level, activeLevel, newLevel);
-							const newDescendantFilename = generateSubnoteFilename(targetTimestamp, transformedLevel);
-							const newDescendantPath = `${notesFolder}/${newDescendantFilename}`;
+							const newDescendantFilename = generateSubnoteFilename(transformedLevel, descendant.title);
+							const newDescendantPath = `${directory}/${newDescendantFilename}`;
 							renameOps.push({ oldPath: descendant.file.path, newPath: newDescendantPath });
 						}
 
@@ -1150,21 +1230,35 @@ export default class SubnotesPlugin extends Plugin {
 			id: 'create-root-note',
 			name: 'Create New Root Note',
 			callback: async () => {
-				const notesFolder = this.settings.notesFolder;
+				// Get active file to determine directory
+				const activeFile = this.app.workspace.getActiveFile();
+				if (!activeFile) {
+					new Notice('No active note - please open a note first');
+					return;
+				}
 
-				// Generate timestamp in YYMMDDHHMMSS format
-				const now = new Date();
-				const year = String(now.getFullYear()).slice(-2);
-				const month = String(now.getMonth() + 1).padStart(2, '0');
-				const day = String(now.getDate()).padStart(2, '0');
-				const hours = String(now.getHours()).padStart(2, '0');
-				const minutes = String(now.getMinutes()).padStart(2, '0');
-				const seconds = String(now.getSeconds()).padStart(2, '0');
-				const timestamp = `${year}${month}${day}${hours}${minutes}${seconds}`;
+				const directory = activeFile.parent?.path || '';
 
-				// Generate filename
-				const filename = `${timestamp}.md`;
-				const filePath = `${notesFolder}/${filename}`;
+				// Prompt for title
+				const title = await this.promptForTitle('Enter title for new root note');
+				if (!title) return;
+
+				// Find existing root notes in directory to determine next number
+				const files = this.app.vault.getMarkdownFiles();
+				let maxRootNumber = 0;
+
+				for (const file of files) {
+					if (file.parent?.path !== directory) continue;
+					const parsed = parseSubnoteFilename(file.name);
+					if (parsed && parsed.level.length === 1) {
+						maxRootNumber = Math.max(maxRootNumber, parsed.level[0]);
+					}
+				}
+
+				// Generate new root level
+				const newLevel = [maxRootNumber + 1];
+				const filename = generateSubnoteFilename(newLevel, title);
+				const filePath = `${directory}/${filename}`;
 
 				// Get template content if configured
 				let content = '';
@@ -1187,6 +1281,53 @@ export default class SubnotesPlugin extends Plugin {
 			}
 		});
 
+		// Add helper method to prompt for title
+		this.promptForTitle = async (placeholder: string): Promise<string | null> => {
+			return new Promise((resolve) => {
+				const modal = new Modal(this.app);
+				modal.titleEl.setText('New Note');
+
+				const inputEl = modal.contentEl.createEl('input', {
+					type: 'text',
+					attr: { placeholder }
+				});
+				inputEl.style.width = '100%';
+				inputEl.style.padding = '8px';
+				inputEl.style.marginBottom = '16px';
+
+				const buttonContainer = modal.contentEl.createEl('div', { cls: 'modal-button-container' });
+				buttonContainer.style.display = 'flex';
+				buttonContainer.style.justifyContent = 'flex-end';
+				buttonContainer.style.gap = '8px';
+
+				const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
+				cancelBtn.addEventListener('click', () => {
+					modal.close();
+					resolve(null);
+				});
+
+				const createBtn = buttonContainer.createEl('button', { text: 'Create', cls: 'mod-cta' });
+				createBtn.addEventListener('click', () => {
+					const title = inputEl.value.trim();
+					if (title) {
+						modal.close();
+						resolve(title);
+					} else {
+						new Notice('Title cannot be empty');
+					}
+				});
+
+				inputEl.addEventListener('keypress', (e) => {
+					if (e.key === 'Enter') {
+						createBtn.click();
+					}
+				});
+
+				modal.open();
+				setTimeout(() => inputEl.focus(), 100);
+			});
+		};
+
 		// Add command to create subnote of active note
 		this.addCommand({
 			id: 'create-subnote-of-active',
@@ -1199,36 +1340,36 @@ export default class SubnotesPlugin extends Plugin {
 					return;
 				}
 
-				// Check if file is in configured notes folder
-				const notesFolder = this.settings.notesFolder;
-				if (!activeFile.path.startsWith(notesFolder + '/')) {
-					new Notice('Active note is not in the configured subnotes folder');
-					return;
-				}
+				const directory = activeFile.parent?.path || '';
 
-				// Parse the active file's name to get timestamp and level
+				// Parse the active file's name to get level
 				const parsed = parseSubnoteFilename(activeFile.name);
 				if (!parsed) {
-					new Notice(`Active note "${activeFile.name}" is not a valid subnote.\nExpected format: YYMMDDHHMMSS.md or YYMMDDHHMMSS.1.2.md`);
+					new Notice(`Active note "${activeFile.name}" is not a valid subnote.\nExpected format: 1.Title.md or 2.1.Title.md`);
 					return;
 				}
 
-				const { timestamp, level: parentLevel } = parsed;
+				const { level: parentLevel } = parsed;
+
+				// Prompt for title
+				const title = await this.promptForTitle('Enter title for new subnote');
+				if (!title) return;
 
 				// Get all files to find existing children
 				const files = this.app.vault.getMarkdownFiles();
 				const existingChildren: SubnoteNode[] = [];
 
 				for (const file of files) {
-					if (!file.path.startsWith(notesFolder + '/')) continue;
+					if (file.parent?.path !== directory) continue;
 
 					const fileParsed = parseSubnoteFilename(file.name);
-					if (fileParsed && fileParsed.timestamp === timestamp && isDirectChild(fileParsed.level, parentLevel)) {
+					if (fileParsed && isDirectChild(fileParsed.level, parentLevel)) {
 						existingChildren.push({
-							name: file.basename,
+							name: file.name,
 							path: file.path,
 							file: file,
 							title: extractTitle(this.app, file),
+							displayTitle: fileParsed.title,
 							children: [],
 							level: fileParsed.level
 						});
@@ -1239,8 +1380,8 @@ export default class SubnotesPlugin extends Plugin {
 				const newLevel = getNextChildLevel(parentLevel, existingChildren);
 
 				// Generate new filename
-				const newFilename = generateSubnoteFilename(timestamp, newLevel);
-				const newFilePath = `${notesFolder}/${newFilename}`;
+				const newFilename = generateSubnoteFilename(newLevel, title);
+				const newFilePath = `${directory}/${newFilename}`;
 
 				// Get template content if configured
 				let content = '';
@@ -1282,9 +1423,8 @@ export default class SubnotesPlugin extends Plugin {
 		// Watch for metadata changes (including YAML frontmatter title updates)
 		this.registerEvent(
 			this.app.metadataCache.on('changed', (file) => {
-				// Only refresh if file is a subnote in configured folder
-				if (file.path.startsWith(this.settings.notesFolder + '/') &&
-					parseSubnoteFilename(file.name)) {
+				// Only refresh if file is a valid subnote
+				if (parseSubnoteFilename(file.name)) {
 					this.refreshAllViews();
 				}
 			})
@@ -1303,48 +1443,40 @@ export default class SubnotesPlugin extends Plugin {
 					for (const viewLeaf of leaves) {
 						const view = viewLeaf.view;
 						if (view instanceof SubnotesView) {
-							view.selectedRootTimestamp = '';
-							view.render();
-						}
-					}
-					return;
-				}
-
-				// Check if it's a subnote in the configured folder
-				if (!activeFile.path.startsWith(this.settings.notesFolder + '/')) {
-					// Active file is not a subnote - show empty state
-					for (const viewLeaf of leaves) {
-						const view = viewLeaf.view;
-						if (view instanceof SubnotesView) {
-							view.selectedRootTimestamp = '';
-							view.render();
+							view.currentDirectory = null;
+							view.selectedRootLevel = null;
+							await view.refresh();
 						}
 					}
 					return;
 				}
 
 				const parsed = parseSubnoteFilename(activeFile.name);
-				if (!parsed) {
-					// Active file is not a valid subnote - show empty state
-					for (const viewLeaf of leaves) {
-						const view = viewLeaf.view;
-						if (view instanceof SubnotesView) {
-							view.selectedRootTimestamp = '';
-							view.render();
-						}
-					}
-					return;
-				}
+				const directory = activeFile.parent?.path || '';
 
-				// Extract root timestamp (first 12 digits)
-				const rootTimestamp = parsed.timestamp;
-
-				// Update all subnote views to filter to this root
+				// Update all subnote views with current directory
 				for (const viewLeaf of leaves) {
 					const view = viewLeaf.view;
 					if (view instanceof SubnotesView) {
-						view.selectedRootTimestamp = rootTimestamp;
-						view.render();
+						// Check if directory changed
+						const directoryChanged = view.currentDirectory !== directory;
+
+						view.currentDirectory = directory;
+
+						if (parsed) {
+							// Extract root level (first number)
+							view.selectedRootLevel = [parsed.level[0]];
+						} else {
+							// Not a valid subnote, but still show directory contents
+							view.selectedRootLevel = null;
+						}
+
+						// Rebuild tree if directory changed
+						if (directoryChanged) {
+							await view.refresh();
+						} else {
+							view.render();
+						}
 					}
 				}
 			})
@@ -1409,19 +1541,6 @@ class SubnotesSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		containerEl.createEl('h2', { text: 'Subnotes Manager Settings' });
-
-		new Setting(containerEl)
-			.setName('Notes folder')
-			.setDesc('The folder containing your timestamp-based notes')
-			.addText(text => text
-				.setPlaceholder('notes')
-				.setValue(this.plugin.settings.notesFolder)
-				.onChange(async (value) => {
-					this.plugin.settings.notesFolder = value || 'notes';
-					await this.plugin.saveSettings();
-					// Refresh all views when settings change
-					await this.plugin.refreshAllViews();
-				}));
 
 		new Setting(containerEl)
 			.setName('Template file path')
