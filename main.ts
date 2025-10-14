@@ -79,11 +79,14 @@ function generateSubnoteFilename(level: number[], title: string): string {
 	return `${level.join('.')}. ${title}.md`;
 }
 
-// Get all descendants of a given note
-function getAllDescendants(level: number[], allFiles: TFile[]): Array<{ file: TFile; level: number[]; title: string }> {
+// Get all descendants of a given note within a specific directory
+function getAllDescendants(level: number[], allFiles: TFile[], directory: string): Array<{ file: TFile; level: number[]; title: string }> {
 	const descendants: Array<{ file: TFile; level: number[]; title: string }> = [];
 
 	for (const file of allFiles) {
+		// Only consider files in the specified directory
+		if (file.parent?.path !== directory) continue;
+
 		const parsed = parseSubnoteFilename(file.name);
 		if (parsed && isSubnoteOf(parsed.level, level)) {
 			descendants.push({ file, level: parsed.level, title: parsed.title });
@@ -396,7 +399,7 @@ class SubnotesView extends ItemView {
 
 		// Get all descendants
 		const allFiles = this.app.vault.getMarkdownFiles();
-		const descendants = getAllDescendants(level, allFiles);
+		const descendants = getAllDescendants(level, allFiles, node.file.parent?.path || '');
 
 		// Show confirmation modal
 		const totalNotes = 1 + descendants.length;
@@ -510,7 +513,7 @@ class SubnotesView extends ItemView {
 
 		// Validation: Cannot drop onto descendants
 		const allFiles = this.app.vault.getMarkdownFiles();
-		const draggedDescendants = getAllDescendants(dragData.level, allFiles);
+		const draggedDescendants = getAllDescendants(dragData.level, allFiles, this.currentDirectory);
 		if (draggedDescendants.some(d => d.file.path === targetNode.path)) {
 			new Notice('Cannot drop note onto its own descendant');
 			return;
@@ -641,7 +644,7 @@ class SubnotesView extends ItemView {
 					const tempPath = `${this.currentDirectory}/${tempFilename}`;
 
 					// Rename descendants first
-					const descendants = getAllDescendants(op.oldLevel, allFiles);
+					const descendants = getAllDescendants(op.oldLevel, allFiles, this.currentDirectory);
 					descendants.sort((a, b) => b.level.length - a.level.length);
 
 					for (const descendant of descendants) {
@@ -659,20 +662,20 @@ class SubnotesView extends ItemView {
 					const tempLevelNum = renumberOps.indexOf(op) + tempOffset;
 					const tempLevel = [...targetParentLevel, tempLevelNum];
 
-					// Get the title from the temp file
-					const tempFilename = generateSubnoteFilename(tempLevel, "temp");
+					// Get the title from the temp file (use the actual title from the original file)
+					const parsedOp = parseSubnoteFilename(op.file.name);
+					if (!parsedOp) continue;
+
+					const tempFilename = generateSubnoteFilename(tempLevel, parsedOp.title);
 					const tempPath = `${this.currentDirectory}/${tempFilename}`;
 					const tempFile = this.app.vault.getAbstractFileByPath(tempPath);
 
 					if (tempFile instanceof TFile) {
-						const parsedTemp = parseSubnoteFilename(tempFile.name);
-						if (!parsedTemp) continue;
-
-						const finalFilename = generateSubnoteFilename(op.newLevel, parsedTemp.title);
+						const finalFilename = generateSubnoteFilename(op.newLevel, parsedOp.title);
 						const finalPath = `${this.currentDirectory}/${finalFilename}`;
 
 						// Rename descendants first
-						const descendants = getAllDescendants(tempLevel, allFiles);
+						const descendants = getAllDescendants(tempLevel, allFiles, this.currentDirectory);
 						descendants.sort((a, b) => b.level.length - a.level.length);
 
 						for (const descendant of descendants) {
@@ -728,7 +731,7 @@ class SubnotesView extends ItemView {
 					const newPath = `${this.currentDirectory}/${newFilename}`;
 
 					// Also rename descendants
-					const siblingDescendants = getAllDescendants(sibling.oldLevel, allFiles);
+					const siblingDescendants = getAllDescendants(sibling.oldLevel, allFiles, this.currentDirectory);
 					siblingDescendants.sort((a, b) => b.level.length - a.level.length); // Deepest first
 
 					for (const descendant of siblingDescendants) {
@@ -1103,7 +1106,7 @@ export default class SubnotesPlugin extends Plugin {
 
 				// Get all files and collect descendants of active note
 				const allFiles = this.app.vault.getMarkdownFiles();
-				const descendants = getAllDescendants(activeLevel, allFiles);
+				const descendants = getAllDescendants(activeLevel, allFiles, activeFile.parent?.path || '');
 
 				// Build list of valid target parents in same directory (exclude active note and its descendants)
 				const validTargets: SubnoteNode[] = [];
