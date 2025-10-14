@@ -8,37 +8,39 @@
 
 ## Naming Convention
 
-Pattern: `YYMMDDHHMMSS[.level].md`
+Pattern: `[level].title.md`
 
 ```
-250106120000.md        # Root note
-250106120000.1.md      # First child
-250106120000.1.2.md    # Second child of first child
-250106120000.2.7.md    # Seventh child of second child
+1.Introduction.md           # Root note (level 1)
+1.1.Background.md          # First child of Introduction
+1.2.Motivation.md          # Second child of Introduction
+2.Related Works.md         # Second root note
+2.1.ESRGAN.md             # First child of Related Works
+2.1.1.Architecture.md     # First child of ESRGAN
 ```
 
 ## Core Data Structures
 
 ```typescript
 interface SubnotesSettings {
-    notesFolder: string;    // Folder containing subnotes
     templatePath: string;   // Optional template for new subnotes
 }
 
 interface SubnoteNode {
-    name: string;           // Filename (for hierarchy)
+    name: string;           // Full filename
     path: string;           // Full file path
     file: TFile;            // Obsidian file object
     title: string | null;   // YAML frontmatter title (for display)
+    displayTitle: string;   // Title extracted from filename
     children: SubnoteNode[];
-    level: number[];        // [1,2] for .1.2
+    level: number[];        // [2,1] for "2.1.Title.md"
 }
 ```
 
 ## Key Utilities
 
 ```typescript
-// Parse filename → {timestamp: "250106120000", level: [1,2]}
+// Parse filename → {level: [2,1], title: "ESRGAN"}
 parseSubnoteFilename(filename: string)
 
 // Check hierarchy relationships
@@ -50,11 +52,11 @@ extractTitle(app: App, file: TFile): string | null
 // Calculate next child level: [1,2] → [1,2,3]
 getNextChildLevel(parentLevel, existingChildren): number[]
 
-// Generate filename: ("250106120000", [1,2]) → "250106120000.1.2.md"
-generateSubnoteFilename(timestamp, level): string
+// Generate filename: ([2,1], "ESRGAN") → "2.1.ESRGAN.md"
+generateSubnoteFilename(level, title): string
 
 // Get all descendants of a note (including nested children)
-getAllDescendants(timestamp, level, allFiles): Array<{ file: TFile; level: number[] }>
+getAllDescendants(level, allFiles): Array<{ file: TFile; level: number[]; title: string }>
 
 // Transform level from source to target hierarchy
 // Example: transformLevel([2,3,7], [2,3], [3,1]) = [3,1,7]
@@ -64,11 +66,11 @@ transformLevel(oldLevel, sourceLevel, targetLevel): number[]
 ## Architecture
 
 ### Tree Building Algorithm
-1. Get all markdown files in configured folder
-2. Parse filenames with regex: `/^(\d{12})(?:\.(\d+(?:\.\d+)*))?\.md$/`
-3. Group by timestamp (first 12 digits)
+1. Get all markdown files in active note's directory
+2. Parse filenames with regex: `/^(\d+(?:\.\d+)*)\.(.+)\.md$/`
+3. Group by root level number (first digit)
 4. Build tree recursively: root → direct children → nested children
-5. Sort by timestamp (recent first) and level numbers
+5. Sort by level numbers
 
 ### View Rendering
 - Displays YAML `title` field, falls back to filename
@@ -85,20 +87,22 @@ transformLevel(oldLevel, sourceLevel, targetLevel): number[]
 
 1. **Toggle Subnotes View** - Show/hide tree view
 2. **Refresh Subnotes View** - Manually rebuild tree
-3. **Create New Root Note** - Create root note with auto-generated timestamp
-   - Generates timestamp in YYMMDDHHMMSS format
-   - Creates file in configured notes folder
+3. **Create New Root Note** - Create root note with user-provided title
+   - Prompts for title
+   - Auto-calculates next root level number
+   - Creates file in active note's directory
    - Applies template content if configured
    - Opens newly created root note
 4. **Insert Active Note as Subnote** - Move active note and all descendants into another note
-   - Opens modal to select target parent note
+   - Opens modal to select target parent note (same directory only)
    - Validates against circular dependencies
    - Renames active note and all descendants with transformed hierarchy
-   - Example: `xx.2.3` → `yy.3.1`, `xx.2.3.7` → `yy.3.1.7`
+   - Example: `2.3.Title` → `3.1.Title`, `2.3.7.SubTitle` → `3.1.7.SubTitle`
    - Checks for filename conflicts before renaming
    - Auto-refreshes view after successful operation
-5. **Create Subnote of Active Note** - Auto-generate child note
-   - Validates active file is valid subnote in configured folder
+5. **Create Subnote of Active Note** - Create child note with user-provided title
+   - Prompts for title
+   - Validates active file is valid subnote
    - Shows improved error message with expected format if validation fails
    - Calculates next level number automatically
    - Applies template content if configured
@@ -111,6 +115,12 @@ transformLevel(oldLevel, sourceLevel, targetLevel): number[]
 2. Update `DEFAULT_SETTINGS` constant
 3. Add UI in `SubnotesSettingTab.display()`
 4. Access via `this.plugin.settings.yourSetting`
+
+### Dynamic Directory Tracking
+- Plugin now tracks notes in the active file's directory
+- No fixed folder configuration needed
+- View automatically refreshes when switching between directories
+- Each directory maintains its own independent hierarchy
 
 ### Adding a New Command
 ```typescript
@@ -143,9 +153,28 @@ await this.refreshAllViews(); // Refresh all open views
 - Orphaned subnotes (no root parent) are ignored
 - Collapse state not persisted across sessions
 - No search/filter functionality
-- Single folder only
+- Title prompts required for new notes (no auto-generation)
 
 ## Changelog
+
+### v2.0.1 (2025-10-14)
+- **Auto-expand path to active file**: Tree automatically expands to show active file location
+- **Active file highlighting**: Active file is now visually highlighted in the tree view
+- Added `findNodePath()` method to find path from root to any node
+- Added `expandPathToNode()` method to expand all parent nodes in a path
+- Enhanced `render()` method to auto-expand on view refresh
+- Updated `active-leaf-change` handler to maintain expanded path when switching files
+
+### v2.0.0 (2025-10-14)
+- **BREAKING CHANGE**: New filename format `x.y.title.md` replaces `YYMMDDHHMMSS.x.y.md`
+- **Dynamic directory tracking**: Plugin now works with active note's directory instead of fixed folder
+- **Removed notesFolder setting**: No longer requires folder configuration
+- **Title-based naming**: All notes now use descriptive titles instead of timestamps
+- **Enhanced display**: Shows formatted titles with level prefixes (e.g., "2.1. ESRGAN")
+- **Title prompts**: Creating new notes now prompts for title input
+- **Updated all commands** to work with new format
+- **Simplified data structures**: Removed timestamp-based grouping
+- **Better directory switching**: Auto-refreshes when switching between directories
 
 ### v1.0.11 (2025-10-06)
 - **Enhanced drag-and-drop with 3-zone drop target for easier child insertion**
@@ -242,4 +271,4 @@ await this.refreshAllViews(); // Refresh all open views
 
 ---
 
-*Last Updated: 2025-10-06 (v1.0.11)*
+*Last Updated: 2025-10-14 (v2.0.0)*

@@ -77,6 +77,16 @@
 	color: var(--text-accent);
 }
 
+/* Active file highlighting */
+.subnotes-node-content.is-active {
+	background-color: var(--background-modifier-active-hover);
+	font-weight: 500;
+}
+
+.subnotes-node-content.is-active .subnotes-node-name {
+	color: var(--text-accent);
+}
+
 /* Children container */
 .subnotes-children {
 	margin-left: 0;

@@ -1,9 +1,9 @@
 {
 	"id": "obsidian-subnotes",
 	"name": "Subnotes Manager",
-	"version": "1.0.0",
+	"version": "2.0.1",
 	"minAppVersion": "0.15.0",
-	"description": "Manage and visualize hierarchical subnotes with timestamp-based naming.",
+	"description": "Manage and visualize hierarchical subnotes with level-based naming in any directory.",
 	"author": "ysyoon",
 	"authorUrl": "",
 	"isDesktopOnly": false

@@ -243,6 +243,36 @@ class SubnotesView extends ItemView {
 		});
 	}
 
+	findNodePath(targetPath: string, nodes: SubnoteNode[], path: SubnoteNode[] = []): SubnoteNode[] | null {
+		for (const node of nodes) {
+			const currentPath = [...path, node];
+
+			if (node.path === targetPath) {
+				return currentPath;
+			}
+
+			if (node.children.length > 0) {
+				const found = this.findNodePath(targetPath, node.children, currentPath);
+				if (found) {
+					return found;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	expandPathToNode(targetPath: string): void {
+		const path = this.findNodePath(targetPath, this.rootNodes);
+
+		if (path) {
+			// Expand all nodes in the path except the target itself
+			for (let i = 0; i < path.length - 1; i++) {
+				this.collapseStates.set(path[i].path, false);
+			}
+		}
+	}
+
 	render(): void {
 		const container = this.containerEl.children[1];
 		container.empty();
@@ -257,6 +287,15 @@ class SubnotesView extends ItemView {
 		if (this.rootNodes.length === 0) {
 			container.createEl('div', { text: 'No subnotes found', cls: 'subnotes-empty' });
 			return;
+		}
+
+		// Auto-expand path to active file
+		const activeFile = this.app.workspace.getActiveFile();
+		if (activeFile && activeFile.parent?.path === this.currentDirectory) {
+			const parsed = parseSubnoteFilename(activeFile.name);
+			if (parsed) {
+				this.expandPathToNode(activeFile.path);
+			}
 		}
 
 		// Filter root nodes based on selection
@@ -788,6 +827,12 @@ class SubnotesView extends ItemView {
 
 		const contentEl = nodeEl.createEl('div', { cls: 'subnotes-node-content' });
 		contentEl.style.paddingLeft = `${depth * 16}px`;
+
+		// Check if this is the active file
+		const activeFile = this.app.workspace.getActiveFile();
+		if (activeFile && activeFile.path === node.path) {
+			contentEl.addClass('is-active');
+		}
 
 		// Make draggable
 		contentEl.draggable = true;
@@ -1468,6 +1513,10 @@ export default class SubnotesPlugin extends Plugin {
 						if (directoryChanged) {
 							await view.refresh();
 						} else {
+							// Auto-expand path to active file before rendering
+							if (parsed && activeFile) {
+								view.expandPathToNode(activeFile.path);
+							}
 							view.render();
 						}
 					}
